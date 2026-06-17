@@ -246,6 +246,61 @@ app.get('/api/url/:id', (req, res) => {
   res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
 });
 
+// ── SearchNo: fetch device SMS from Firebase, return messages with Indian phone numbers ──
+app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+
+  const db = loadDb(id);
+  const dev = db[deviceId];
+  if (!dev) return res.status(404).json({ error: 'Device not found in cache' });
+
+  const objId = dev.obj_id || 'N/A';
+  const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
+
+  try {
+    const resp = await fetch(fetchUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) {
+      return res.json({ hits: [], total: 0, error: `HTTP ${resp.status}` });
+    }
+    const smsData = await resp.json();
+
+    // Indian mobile: 10 digits starting 6-9, optionally prefixed with +91 or 91
+    const PHONE_RE = /(?<!\d)(?:\+91|91)?([6-9]\d{9})(?!\d)/g;
+    const MISSED_CALL_RE = /missed\s+call(s)?\s+(from|to)/i;
+    const AVAILABLE_RE = /is\s+now\s+available|available\s+to\s+(take|receive|answer)/i;
+
+    function* iterMsgs(data) {
+      if (typeof data !== 'object' || !data) return;
+      for (const v of Object.values(data)) {
+        if (typeof v !== 'object' || !v) continue;
+        const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
+        if (hasBody) { yield v; }
+        else { yield* iterMsgs(v); }
+      }
+    }
+
+    const hits = [];
+    for (const msg of iterMsgs(smsData)) {
+      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      if (!body) continue;
+      if (MISSED_CALL_RE.test(body) || AVAILABLE_RE.test(body)) continue;
+      const phones = [...new Set([...body.matchAll(PHONE_RE)].map(m => m[1]))];
+      if (phones.length) hits.push({ body, phones });
+      if (hits.length >= 100) break; // cap at 100
+    }
+
+    res.json({ hits, total: hits.length });
+  } catch (e) {
+    res.json({ hits: [], total: 0, error: e.message });
+  }
+});
+
 // ── Serve frontend ────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
