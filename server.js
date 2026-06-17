@@ -8,7 +8,7 @@ const app = express();
 const PORT = 3000;
 
 // ── Path to bot's working directory (where devices_database_*.json live) ──────
-const BOT_DIR = process.env.BOT_DIR || path.resolve(__dirname, '..');
+const BOT_DIR = process.env.BOT_DIR || '/home/ubuntu/newp';
 
 // ── RAW_TARGETS from DA1.py ───────────────────────────────────────────────────
 const RAW_TARGETS = [
