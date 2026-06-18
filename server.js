@@ -307,13 +307,13 @@ function summariseTarget(target) {
 
 // ── API routes ────────────────────────────────────────────────────────────────
 app.get('/api/urls', (req, res) => {
-  const summaries = TARGETS.map(t => summariseTarget(t));
+  const summaries = TARGETS.map(t => summariseTarget(t)).filter(t => t.total > 0);
   res.json(summaries);
 });
 
 // ── OLD URLs API routes ───────────────────────────────────────────────────────
 app.get('/api/old/urls', (req, res) => {
-  res.json(OLD_TARGETS.map(t => summariseOldTarget(t)));
+  res.json(OLD_TARGETS.map(t => summariseOldTarget(t)).filter(t => t.total > 0));
 });
 
 app.get('/api/old/url/:id', (req, res) => {
