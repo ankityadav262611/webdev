@@ -104,6 +104,16 @@
   .enriched-info { font-size: 11px; color: var(--muted); }
   .enriched-info span { color: var(--text); }
 
+  .sim-edit-btn { background:none; border:none; color:var(--muted); cursor:pointer; font-size:11px;
+                  padding:1px 4px; border-radius:3px; margin-left:2px; }
+  .sim-edit-btn:hover { color:var(--yellow); }
+  .sim-edit-wrap { display:inline-flex; align-items:center; gap:3px; }
+  .sim-edit-input { background:var(--bg3); border:1px solid var(--accent); border-radius:4px;
+                    color:var(--text); padding:2px 6px; font-size:12px; width:120px; outline:none; }
+  .sim-save-btn { background:var(--accent); border:none; border-radius:4px; color:#fff;
+                  padding:2px 7px; font-size:11px; cursor:pointer; }
+  .sim-save-btn:hover { opacity:.85; }
+
   /* ── SMS search results ── */
   .sms-hit-card { background:var(--bg3); border:1px solid var(--border); border-radius:8px;
                   padding:10px 14px; margin-bottom:8px; }
@@ -493,21 +503,27 @@ function renderDevices() {
 
   tbody.innerHTML = list.map((d, i) => {
     const isOn = d.status === 'online';
-    const sim1Html = d.sim1Clean
-      ? `<a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${d.sim1Clean}" target="_blank">${d.sim1}</a>`
-      : `<span style="color:var(--muted)">${d.sim1 !== 'N/A' ? d.sim1 : '—'}</span>`;
-    const sim2Html = d.sim2Clean
-      ? `<a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${d.sim2Clean}" target="_blank">${d.sim2}</a>`
-      : `<span style="color:var(--muted)">${d.sim2 !== 'N/A' ? d.sim2 : '—'}</span>`;
 
-    // Enriched IDs
-    const foundIds = [];
-    for (const enriched of [...(d.sim1Enriched||[]), ...(d.sim2Enriched||[])]) {
-      if (enriched.is_valid) foundIds.push(enriched.id);
+    // SIM rendering: if has clean number → paanel link, else → editable field
+    function simCell(simRaw, simClean, simOverride, slot, deviceId) {
+      const override = simOverride || '';
+      const effective = override || simClean;
+      if (effective) {
+        const display = override || simRaw;
+        return `<div class="sim-edit-wrap">
+          <a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${effective}" target="_blank">${display}</a>
+          <button class="sim-edit-btn" title="Edit" onclick="startSimEdit(event,'${deviceId}','${slot}',this)">✏️</button>
+        </div>`;
+      }
+      // No number — show editable placeholder
+      return `<div class="sim-edit-wrap" id="sim-wrap-${deviceId}-${slot}">
+        <span style="color:var(--muted);font-size:11px">—</span>
+        <button class="sim-edit-btn" title="Add SIM" onclick="startSimEdit(event,'${deviceId}','${slot}',this)">✏️</button>
+      </div>`;
     }
-    const idsHtml = foundIds.length
-      ? foundIds.slice(0,3).map(id => `<span class="ids-tag">${id.slice(0,12)}</span>`).join('')
-      : '—';
+
+    const sim1Html = simCell(d.sim1, d.sim1Clean, d.sim1Override, 'sim1', d.deviceId);
+    const sim2Html = simCell(d.sim2, d.sim2Clean, d.sim2Override, 'sim2', d.deviceId);
 
     const kwHtml = d.juicyKeywords.length
       ? d.juicyKeywords.map(k => `<span class="kw-tag">${k}</span>`).join('')
@@ -717,6 +733,48 @@ async function searchDeviceGlobal(q) {
     info.textContent = `❌ Search error: ${e.message}`;
     grid.innerHTML = '';
   }
+}
+
+// ── SIM inline edit ───────────────────────────────────────────────────────────
+function startSimEdit(evt, deviceId, slot, btn) {
+  evt.stopPropagation();
+  const wrap = btn.closest('.sim-edit-wrap');
+  if (!wrap) return;
+  // Find existing value from currentDevices
+  const dev = currentDevices.find(d => d.deviceId === deviceId);
+  const current = (slot === 'sim1' ? dev?.sim1Override : dev?.sim2Override) || '';
+  wrap.innerHTML = `
+    <input class="sim-edit-input" id="sim-inp-${deviceId}-${slot}" type="text"
+           value="${current}" placeholder="10-digit number" maxlength="15"
+           onkeydown="if(event.key==='Enter')saveSimEdit(event,'${deviceId}','${slot}');if(event.key==='Escape')renderDevices()">
+    <button class="sim-save-btn" onclick="saveSimEdit(event,'${deviceId}','${slot}')">✓</button>
+    <button class="sim-edit-btn" onclick="renderDevices()" title="Cancel">✕</button>
+  `;
+  document.getElementById(`sim-inp-${deviceId}-${slot}`)?.focus();
+}
+
+async function saveSimEdit(evt, deviceId, slot) {
+  evt.stopPropagation();
+  const inp = document.getElementById(`sim-inp-${deviceId}-${slot}`);
+  if (!inp) return;
+  const val = inp.value.trim();
+  try {
+    await fetch(`/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+      { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ [slot]: val }) });
+    // Update in-memory device
+    const dev = currentDevices.find(d => d.deviceId === deviceId);
+    if (dev) {
+      if (slot === 'sim1') {
+        dev.sim1Override = val;
+        dev.sim1Clean = val.replace(/\D/g,'').slice(-10) || dev.sim1Clean;
+      } else {
+        dev.sim2Override = val;
+        dev.sim2Clean = val.replace(/\D/g,'').slice(-10) || dev.sim2Clean;
+      }
+    }
+  } catch (e) { console.error('SIM save error:', e); }
+  renderDevices();
 }
 
 // ── Per-URL SMS Search ────────────────────────────────────────────────────────

