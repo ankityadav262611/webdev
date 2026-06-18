@@ -487,6 +487,20 @@ app.get('/api/url/:id/live', async (req, res) => {
   }
 });
 
+// ── Debug: dump aadhar DB for a specific URL ─────────────────────────────────
+app.get('/api/debug/aadhar/:id', (req, res) => {
+  const id = req.params.id;
+  const aadharDb = loadAadharDb();
+  const forUrl = aadharDb[id] || {};
+  res.json({
+    file: AADHAR_FILE,
+    exists: fs.existsSync(AADHAR_FILE),
+    urlKeys: Object.keys(aadharDb).slice(0,10),
+    devicesForUrl: forUrl,
+    count: Object.keys(forUrl).length,
+  });
+});
+
 // ── Global device search across all URLs ─────────────────────────────────────
 app.get('/api/search/device/:deviceId', (req, res) => {
   const q = req.params.deviceId.toLowerCase().trim();
