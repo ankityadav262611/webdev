@@ -507,7 +507,7 @@ function renderDevices() {
       <td><button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
       <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a>
           <button class="sms-btn" style="margin-left:4px" onclick="openSearchno(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
-          ${d.hasAadhaar ? `<button class="sms-btn" style="margin-left:4px" onclick="openSearchaadhar(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button>` : ''}
+          ${(d.hasAadhaar || (d.aadhaarNums && d.aadhaarNums.length > 0)) ? `<button class="sms-btn" style="margin-left:4px" onclick="openSearchaadhar(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button>` : ''}
       </td>
     </tr>`;
   }).join('');
