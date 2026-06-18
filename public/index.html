@@ -516,6 +516,7 @@ async function openUrl(id) {
   const res = await fetch(`${apiPrefix()}/url/${id}`);
   const data = await res.json();
   currentDevices = data.devices || [];
+  loadSimOverridesFromStorage(); // merge any locally saved SIM overrides
 
   const online  = currentDevices.filter(d => d.status === 'online').length;
   const offline = currentDevices.length - online;
@@ -804,11 +805,31 @@ async function searchDeviceGlobal(q) {
 }
 
 // ── SIM inline edit ───────────────────────────────────────────────────────────
+// localStorage key: simov_<mode>_<urlId>_<deviceId>_<slot>
+function _simKey(deviceId, slot) {
+  return `simov_${currentMode}_${currentUrlId}_${deviceId}_${slot}`;
+}
+
+function loadSimOverridesFromStorage() {
+  // Apply any stored SIM overrides to currentDevices
+  for (const dev of currentDevices) {
+    const s1 = localStorage.getItem(_simKey(dev.deviceId, 'sim1'));
+    const s2 = localStorage.getItem(_simKey(dev.deviceId, 'sim2'));
+    if (s1 !== null) {
+      dev.sim1Override = s1;
+      if (s1) dev.sim1Clean = s1.replace(/\D/g,'').slice(-10) || dev.sim1Clean;
+    }
+    if (s2 !== null) {
+      dev.sim2Override = s2;
+      if (s2) dev.sim2Clean = s2.replace(/\D/g,'').slice(-10) || dev.sim2Clean;
+    }
+  }
+}
+
 function startSimEdit(evt, deviceId, slot, btn) {
   evt.stopPropagation();
   const wrap = btn.closest('.sim-edit-wrap');
   if (!wrap) return;
-  // Find existing value from currentDevices
   const dev = currentDevices.find(d => d.deviceId === deviceId);
   const current = (slot === 'sim1' ? dev?.sim1Override : dev?.sim2Override) || '';
   wrap.innerHTML = `
@@ -826,22 +847,29 @@ async function saveSimEdit(evt, deviceId, slot) {
   const inp = document.getElementById(`sim-inp-${deviceId}-${slot}`);
   if (!inp) return;
   const val = inp.value.trim();
+
+  // 1. Save to localStorage immediately (always works)
+  localStorage.setItem(_simKey(deviceId, slot), val);
+
+  // 2. Also try server (best-effort, silent fail if not available)
   try {
-    await fetch(`${apiPrefix()}/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+    const r = await fetch(`${apiPrefix()}/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
       { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ [slot]: val }) });
-    // Update in-memory device
-    const dev = currentDevices.find(d => d.deviceId === deviceId);
-    if (dev) {
-      if (slot === 'sim1') {
-        dev.sim1Override = val;
-        dev.sim1Clean = val.replace(/\D/g,'').slice(-10) || dev.sim1Clean;
-      } else {
-        dev.sim2Override = val;
-        dev.sim2Clean = val.replace(/\D/g,'').slice(-10) || dev.sim2Clean;
-      }
+    if (!r.ok) throw new Error('not ok');
+  } catch { /* server not available — localStorage is the fallback */ }
+
+  // 3. Update in-memory device
+  const dev = currentDevices.find(d => d.deviceId === deviceId);
+  if (dev) {
+    if (slot === 'sim1') {
+      dev.sim1Override = val;
+      dev.sim1Clean = val ? (val.replace(/\D/g,'').slice(-10) || dev.sim1Clean) : dev.sim1Clean;
+    } else {
+      dev.sim2Override = val;
+      dev.sim2Clean = val ? (val.replace(/\D/g,'').slice(-10) || dev.sim2Clean) : dev.sim2Clean;
     }
-  } catch (e) { console.error('SIM save error:', e); }
+  }
   renderDevices();
 }
 
