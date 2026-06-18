@@ -91,19 +91,39 @@ const RAW_TARGETS = [
   [77,'https://u25783858-e6739-default-rtdb.firebaseio.com'],
   [78,'https://u62751482-f5b46-default-rtdb.firebaseio.com'],
   [79,'https://u8208372-ad1d1-default-rtdb.firebaseio.com'],
+  // New URLs (80-97) — schema verified live
+  [80,'https://tinmm88-b7db5-default-rtdb.firebaseio.com'],
+  [81,'https://e9turnament1-default-rtdb.firebaseio.com'],
+  [82,'https://raaz-5287d-default-rtdb.firebaseio.com'],
+  [83,'https://apkpure-6eb6a-default-rtdb.firebaseio.com'],
+  [84,'https://e14turnament2-default-rtdb.firebaseio.com'],
+  [85,'https://bossuun-default-rtdb.firebaseio.com'],
+  [86,'https://jsjsjdj-7f0d1-default-rtdb.firebaseio.com'],
+  [87,'https://rahul-54fe9-default-rtdb.firebaseio.com'],
+  [88,'https://runjun-master-panel-default-rtdb.firebaseio.com'],
+  [89,'https://apkdriod-f6fb9-default-rtdb.firebaseio.com'],
+  [90,'https://fir-1fa16-default-rtdb.firebaseio.com'],
+  [91,'https://newspreding-default-rtdb.firebaseio.com'],
+  [92,'https://privatesok-59944-default-rtdb.firebaseio.com'],
+  [93,'https://fir-27c9e-default-rtdb.firebaseio.com'],
+  [94,'https://singhaana-6f199-default-rtdb.firebaseio.com'],
+  [95,'https://vibe-d238e-default-rtdb.firebaseio.com'],
+  [96,'https://painislv-default-rtdb.firebaseio.com'],
+  [97,'https://rahais-default-rtdb.firebaseio.com'],
 ];
 
 // ── Schema assignment (mirrors DA1.py MultiTargetManager) ─────────────────────
-const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73]);
+const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73,
+                            81,83,90,92,94,97]);
 const SCHEMA_3  = new Set([31,32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
 const SCHEMA_4  = new Set([42,43,44,45,49,50,51,52]);
 const SCHEMA_5  = new Set([58]);
 const SCHEMA_6  = new Set([57]);
 const SCHEMA_8A = new Set([1]);
 const SCHEMA_8B = new Set([3,8,9,10,11,41]);
-const SCHEMA_9  = new Set([5,12,13,40,54,59,61,62,63,64,65,70,74,75,76]);
-const SCHEMA_10 = new Set([4]);
-const SCHEMA_11 = new Set([7]);
+const SCHEMA_9  = new Set([5,12,13,40,54,59,61,62,63,64,65,70,74,75,76,93]);
+const SCHEMA_10 = new Set([4,84]);
+const SCHEMA_11 = new Set([7,80,82,85,86,87,88,89,91,95,96]);
 const SCHEMA_12 = new Set([48]);
 const SCHEMA_13 = new Set([53]);
 const SCHEMA_14 = new Set([39,78]);
