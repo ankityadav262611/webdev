@@ -365,15 +365,13 @@ function parseSms(dsms, schema) {
 }
 
 // ── Schemas that need per-device SMS fetch (not inline in main endpoint) ──────
-// Schema 1: SMS at /All_Users/sms/<did>.json
 // Schema 2,4,5: SMS at /messages/<did>.json
 // Schema 3,6: SMS at /user_sms/<did>.json
-const NEEDS_PER_DEVICE_SMS = new Set([1, 2, 3, 4, 5, 6]);
+// Schema 1: SMS is inline at data.sms in /All_Users.json — NO per-device fetch needed
+const NEEDS_PER_DEVICE_SMS = new Set([2, 3, 4, 5, 6]);
 
 function getSmsEndpoint(url, schema, did) {
-  if (schema === 1)                              return `${url}/All_Users/sms/${did}.json`;
   if (schema === 2 || schema === 4 || schema === 5) return `${url}/messages/${did}.json`;
-  // schemas 3, 6 and fallback
   return `${url}/user_sms/${did}.json`;
 }
 
@@ -404,8 +402,8 @@ async function pollTarget(target) {
 
     if (schema === 1) {
       rawDevs = data?.Data?.DeviceInfo || {};
-      allSms  = {};  // SMS fetched per-device below via /All_Users/sms/<did>.json
-      allSims = data?.Data?.SimINFO    || {};
+      allSms  = data?.sms              || {};  // root-level sms map: {did: {msgId: {body,...}}}
+      allSims = data?.simDetails       || {};  // root-level simDetails: {did: {sim1Number,...}}
     } else if (schema === '8a') {
       rawDevs = data?.All_User?.Info    || {};
       allSms  = data?.All_User?.Sms     || {};
