@@ -365,10 +365,13 @@ function parseSms(dsms, schema) {
 }
 
 // ── Schemas that need per-device SMS fetch (not inline in main endpoint) ──────
-// mirrors DA1.py: schemas 2,3,4,5,6 fetch SMS separately per device
-const NEEDS_PER_DEVICE_SMS = new Set([2, 3, 4, 5, 6]);
+// Schema 1: SMS at /All_Users/sms/<did>.json
+// Schema 2,4,5: SMS at /messages/<did>.json
+// Schema 3,6: SMS at /user_sms/<did>.json
+const NEEDS_PER_DEVICE_SMS = new Set([1, 2, 3, 4, 5, 6]);
 
 function getSmsEndpoint(url, schema, did) {
+  if (schema === 1)                              return `${url}/All_Users/sms/${did}.json`;
   if (schema === 2 || schema === 4 || schema === 5) return `${url}/messages/${did}.json`;
   // schemas 3, 6 and fallback
   return `${url}/user_sms/${did}.json`;
@@ -401,7 +404,7 @@ async function pollTarget(target) {
 
     if (schema === 1) {
       rawDevs = data?.Data?.DeviceInfo || {};
-      allSms  = data?.Data?.Sms        || {};
+      allSms  = {};  // SMS fetched per-device below via /All_Users/sms/<did>.json
       allSims = data?.Data?.SimINFO    || {};
     } else if (schema === '8a') {
       rawDevs = data?.All_User?.Info    || {};
@@ -437,7 +440,7 @@ async function pollTarget(target) {
       rawDevs = (data && typeof data === 'object') ? data : {};
     }
 
-    // ── For schemas that store SMS separately: fetch per-device SMS in parallel
+    // ── For schemas that store SMS separately: fetch per-device SMS in parallel ─
     if (NEEDS_PER_DEVICE_SMS.has(schema)) {
       const dids = Object.keys(rawDevs);
       const results = await Promise.allSettled(
@@ -447,6 +450,14 @@ async function pollTarget(target) {
         const val = results[i].status === 'fulfilled' ? results[i].value : null;
         allSms[dids[i]] = val || {};
       }
+    }
+
+    // ── Schema 12: SMS is at /profex_incoming/<did> from root /.json ──────────
+    if (schema === 12) {
+      try {
+        const root = await fbFetch(`${url}/.json`);
+        allSms = root?.profex_incoming || {};
+      } catch {}
     }
 
     // ── Process each device ──────────────────────────────────────────────────
