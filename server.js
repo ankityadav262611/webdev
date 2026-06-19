@@ -506,7 +506,9 @@ async function pollTarget(target) {
         const bv = dinfo.battery;
         bat   = bv != null && bv !== 'N/A' ? (String(bv).endsWith('%') ? String(bv) : `${bv}%`) : 'N/A';
         brand = dinfo.d_name || 'Unknown';
-        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        const luTs9 = Number(dinfo.lastUpdated || dinfo.timestamp || 0);
+        const bestTs9 = Math.max(maxTs, luTs9);
+        isOn  = dinfo.status === 'online' || (bestTs9 > 0 && (Date.now() - bestTs9) < STALE_MS);
 
       } else if (schema === 2 || schema === 4) {
         const sims = dinfo.sims || [];
@@ -521,7 +523,10 @@ async function pollTarget(target) {
         s2    = dinfo.numberSim2 || 'N/A';
         bat   = dinfo.battery != null ? `${dinfo.battery}%` : 'N/A';
         brand = dinfo.d_name || 'Unknown';
-        isOn  = dinfo.status === 'online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        // lastUpdated is epoch-ms of last device heartbeat — more reliable than SMS ts
+        const luTs = Number(dinfo.lastUpdated || dinfo.timestamp || 0);
+        const bestTs = Math.max(maxTs, luTs);
+        isOn  = dinfo.status === 'online' || (bestTs > 0 && (Date.now() - bestTs) < STALE_MS);
 
       } else if (schema === 5) {
         const info = dinfo.info || {};
