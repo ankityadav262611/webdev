@@ -197,7 +197,7 @@
   </div>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or host…">
-    <button class="btn btn-ghost" id="refresh-btn" onclick="loadUrls()">↻ Refresh</button>
+    <button class="btn btn-ghost" id="refresh-btn" onclick="refreshUrlList()">↻ Refresh</button>
   </div>
 </header>
 
@@ -237,7 +237,7 @@
     <div class="back-btn" onclick="showUrls()">← Back to all URLs</div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
       <div class="url-detail-header" id="url-detail-header" style="flex:1;margin:0"></div>
-      <button class="btn btn-ghost" onclick="openUrl(currentUrlId)" style="white-space:nowrap;flex-shrink:0">↻ Refresh</button>
+      <button class="btn btn-ghost" onclick="refreshCurrentUrl()" style="white-space:nowrap;flex-shrink:0">↻ Refresh</button>
     </div>
     <div class="device-filters" id="device-filters"></div>
     <!-- ── Per-URL SMS Search ── -->
@@ -667,6 +667,31 @@ function showUrls() {
   document.getElementById('view-devices').classList.remove('active');
   document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-urls').classList.add('active');
+}
+
+// ── Live refresh: poll Firebase then reload device page ───────────────────────
+async function refreshCurrentUrl() {
+  const btn = document.querySelector('#view-devices .btn-ghost');
+  const origText = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    // Trigger server-side Firebase poll (updates DB with fresh status)
+    await fetch(`/api/url/${currentUrlId}/live`);
+  } catch {}
+  if (btn) { btn.textContent = origText; btn.disabled = false; }
+  // Reload device list from freshly updated DB
+  await openUrl(currentUrlId);
+}
+
+// ── Refresh URL list: poll all URLs live then reload ──────────────────────────
+async function refreshUrlList() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  // Poll all visible URLs in parallel (server fetches Firebase for each)
+  const ids = allUrls.map(u => u.id);
+  await Promise.allSettled(ids.map(id => fetch(`/api/url/${id}/live`).catch(() => {})));
+  if (btn) { btn.textContent = '↻ Refresh'; btn.disabled = false; }
+  await loadUrls();
 }
 
 // ── SearchNo Modal ────────────────────────────────────────────────────────────
