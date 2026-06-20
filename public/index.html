@@ -632,9 +632,13 @@ function renderDevices() {
       const override = simOverride || '';
       const effective = override || simClean;
       if (effective) {
+        // Display: show override value as-is (may be a name or number), or simRaw
         const display = override || simRaw;
         return `<div class="sim-edit-wrap">
-          <a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${effective}" target="_blank">${display}</a>
+          ${simClean
+            ? `<a class="sim-link" href="https://api.paanel.shop/api/gateway.php?key=Jack&number=${simClean}" target="_blank">${display}</a>`
+            : `<span>${display}</span>`
+          }
           <button class="sim-edit-btn" title="Edit" onclick="startSimEdit(event,'${deviceId}','${slot}',this)">✏️</button>
         </div>`;
       }
@@ -996,10 +1000,12 @@ function startSimEdit(evt, deviceId, slot, btn) {
   const wrap = btn.closest('.sim-edit-wrap');
   if (!wrap) return;
   const dev = currentDevices.find(d => d.deviceId === deviceId);
-  const current = (slot === 'sim1' ? dev?.sim1Override : dev?.sim2Override) || '';
+  const current = (slot === 'sim1' ? dev?.sim1Clean : dev?.sim2Clean) || '';
   wrap.innerHTML = `
-    <input class="sim-edit-input" id="sim-inp-${deviceId}-${slot}" type="text"
+    <input class="sim-edit-input" id="sim-inp-${deviceId}-${slot}" type="tel"
+           inputmode="numeric" pattern="[0-9]*"
            value="${current}" placeholder="10-digit number" maxlength="15"
+           oninput="this.value=this.value.replace(/[^0-9]/g,'')"
            onkeydown="if(event.key==='Enter')saveSimEdit(event,'${deviceId}','${slot}');if(event.key==='Escape')renderDevices()">
     <button class="sim-save-btn" onclick="saveSimEdit(event,'${deviceId}','${slot}')">✓</button>
     <button class="sim-edit-btn" onclick="renderDevices()" title="Cancel">✕</button>
