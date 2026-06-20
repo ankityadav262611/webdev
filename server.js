@@ -842,7 +842,8 @@ app.get('/api/old/url/:id', (req, res) => {
 
 // ── PP URLs API routes ────────────────────────────────────────────────────────
 app.get('/api/pp/urls', (req, res) => {
-  const summaries = PP_TARGETS.map(t => summariseTarget(t)).filter(t => t.total > 0);
+  // Return all PP targets, including empty ones so they're visible
+  const summaries = PP_TARGETS.map(t => summariseTarget(t));
   res.json(summaries);
 });
 
@@ -884,7 +885,9 @@ app.post('/api/url/:id/refresh', async (req, res) => {
 // ── Live fetch (bypasses DB — used by refreshAll in frontend) ─────────────────
 app.get('/api/url/:id/live', async (req, res) => {
   const id = parseInt(req.params.id);
-  const target = TARGETS.find(t => t.id === id);
+  const target = TARGETS.find(t => t.id === id)
+    || OLD_TARGETS.find(t => t.id === id)
+    || PP_TARGETS.find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'Not found' });
   await pollTarget(target);
   const db = getTargetDb(target);
