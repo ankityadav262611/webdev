@@ -373,19 +373,18 @@ function parseSms(dsms, schema) {
     } else {
       body = String(msg.body || msg.message || msg.msg || msg.text || '');
       // Try numeric timestamp fields first, then parse date strings
-      const rawTs = msg.timestampMillis || msg.timestamp;
+      const rawTs = msg.timestampMillis || msg.timestamp || (typeof msg.date === 'number' ? msg.date : null);
       if (rawTs) {
         ts = Number(rawTs) || 0;
       } else if (msg.receivedDate || msg.dateReceived || msg.date_received) {
         // "2026-05-25 12:29:50" or similar ISO-style string
         try { ts = new Date(msg.receivedDate || msg.dateReceived || msg.date_received).getTime() || 0; } catch {}
-      } else if (msg.date) {
+      } else if (msg.date && typeof msg.date === 'string') {
         // "09/09/2025 09:37 am" or "19/06/2026 05:28 pm" — DD/MM/YYYY format
         try {
           const raw = String(msg.date).trim();
           const m = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(.+)$/);
           if (m) {
-            // Reorder to MM/DD/YYYY so JS Date parses correctly
             ts = new Date(`${m[2]}/${m[1]}/${m[3]} ${m[4]}`).getTime() || 0;
           }
         } catch {}
