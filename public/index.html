@@ -185,6 +185,24 @@
     header { flex-wrap: wrap; } .search-bar { margin-left: 0; width: 100%; }
     .search-bar input { flex: 1; }
   }
+
+  /* ── Telegram Alert System ── */
+  .bell-btn {
+    background: none; border: none; cursor: pointer; font-size: 1rem;
+    padding: 2px 4px; margin-left: 4px; color: #9ca3af; opacity: 0.4;
+    transition: opacity 0.15s, color 0.15s; vertical-align: middle;
+  }
+  .bell-btn.active { color: #f59e0b; opacity: 1; }
+  .bell-btn:hover  { opacity: 0.85; }
+  .bot-list-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; border-bottom: 1px solid var(--border); gap: 8px;
+  }
+  .bot-list-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trigger-group { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+  .trigger-group label { display:flex; align-items:center; gap:8px; cursor:pointer; }
+  .field-error { color:#ef4444; font-size:0.82rem; margin-top:3px; display:none; }
+  .field-error.visible { display:block; }
 </style>
 </head>
 <body>
@@ -1187,6 +1205,323 @@ function clearSmsSearch() {
 // Start on homepage — user picks New or Old
 document.getElementById('view-urls').classList.remove('active');
 document.getElementById('view-home').classList.add('active');
+
+// ── Telegram Alert System ─────────────────────────────────────────────────────
+
+// Inject "🤖 Telegram Bots" button into header (no modification to existing HTML)
+(function injectTelegramBtn() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-ghost';
+  btn.style.marginLeft = '8px';
+  btn.textContent = '🤖 Telegram Bots';
+  btn.onclick = openTelegramSetup;
+  header.appendChild(btn);
+})();
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let currentAlertConfigs = {};
+let _alertModalDeviceId = null;
+let _alertModalBrand    = null;
+let _alertHasExisting   = false;
+
+// ── Utility helpers ───────────────────────────────────────────────────────────
+function _esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function _showFieldError(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; el.classList.add('visible'); }
+}
+function _hideFieldError(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('visible');
+}
+
+// ── Setup Modal ───────────────────────────────────────────────────────────────
+function openTelegramSetup() {
+  loadBotsForModal();
+  document.getElementById('telegram-setup-modal').classList.add('open');
+}
+function closeTelegramSetup() {
+  document.getElementById('telegram-setup-modal').classList.remove('open');
+  document.getElementById('new-bot-name').value  = '';
+  document.getElementById('new-bot-token').value = '';
+  document.getElementById('bot-form-status').textContent = '';
+  _hideFieldError('bot-name-error');
+  _hideFieldError('bot-token-error');
+}
+async function loadBotsForModal() {
+  const list = document.getElementById('bot-list');
+  list.textContent = 'Loading…';
+  try {
+    const res  = await fetch('/api/telegram/bots');
+    const bots = await res.json();
+    if (!bots.length) {
+      list.innerHTML = '<p style="color:var(--muted);font-size:0.85rem">No bots saved yet.</p>';
+      return;
+    }
+    list.innerHTML = bots.map(b => `
+      <div class="bot-list-item">
+        <span title="${_esc(b.name)}">${_esc(b.name)}</span>
+        <button class="btn btn-ghost" style="font-size:0.8rem;padding:3px 8px"
+                onclick="deleteBot('${_esc(b.id)}','${_esc(b.name)}')">Delete</button>
+      </div>`).join('');
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--red);font-size:0.85rem">Failed to load bots.</p>';
+  }
+}
+async function addBot() {
+  const nameEl  = document.getElementById('new-bot-name');
+  const tokenEl = document.getElementById('new-bot-token');
+  const status  = document.getElementById('bot-form-status');
+  let valid = true;
+  _hideFieldError('bot-name-error');
+  _hideFieldError('bot-token-error');
+  status.textContent = '';
+  if (!nameEl.value.trim())  { _showFieldError('bot-name-error',  'Bot name is required.');  valid = false; }
+  if (!tokenEl.value.trim()) { _showFieldError('bot-token-error', 'Bot token is required.'); valid = false; }
+  if (!valid) return;
+  try {
+    const res  = await fetch('/api/telegram/bots', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: nameEl.value.trim(), token: tokenEl.value.trim() }),
+    });
+    const data = await res.json();
+    if (res.status === 201) { nameEl.value = ''; tokenEl.value = ''; loadBotsForModal(); }
+    else status.textContent = data.error || 'Failed to add bot.';
+  } catch (e) { status.textContent = 'Network error. Could not add bot.'; }
+}
+async function deleteBot(id, name) {
+  if (!confirm(`Delete bot '${name}'? All alert configs using this bot will also be removed.`)) return;
+  try {
+    const res = await fetch(`/api/telegram/bots/${id}`, { method: 'DELETE' });
+    if (res.status === 204) loadBotsForModal();
+    else { const d = await res.json().catch(() => ({})); alert(d.error || 'Failed to delete bot.'); }
+  } catch (e) { alert('Network error. Could not delete bot.'); }
+}
+
+// ── Alert Modal ───────────────────────────────────────────────────────────────
+async function openAlertModal(deviceId, brand) {
+  _alertModalDeviceId = deviceId;
+  _alertModalBrand    = brand;
+  _alertHasExisting   = false;
+  document.getElementById('alert-modal-status').textContent = '';
+  document.getElementById('alert-modal-device-heading').textContent = `Device: ${deviceId}  |  ${brand}`;
+  document.getElementById('alert-chat-id').value = '';
+  document.getElementById('trigger-online').checked  = false;
+  document.getElementById('trigger-offline').checked = false;
+  document.getElementById('trigger-sms').checked     = false;
+  _hideFieldError('alert-bot-error');
+  _hideFieldError('alert-chatid-error');
+  _hideFieldError('alert-trigger-error');
+
+  const select = document.getElementById('alert-bot-select');
+  select.innerHTML = '<option value="" disabled selected>— Select a bot —</option>';
+  try {
+    const res  = await fetch('/api/telegram/bots');
+    const bots = await res.json();
+    bots.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.id; opt.textContent = b.name;
+      select.appendChild(opt);
+    });
+  } catch (e) { /* leave empty */ }
+
+  const cfg = currentAlertConfigs[deviceId];
+  if (cfg) {
+    _alertHasExisting = true;
+    select.value = cfg.bot_id;
+    document.getElementById('alert-chat-id').value          = cfg.chat_id || '';
+    document.getElementById('trigger-online').checked  = cfg.triggers.includes('device_online');
+    document.getElementById('trigger-offline').checked = cfg.triggers.includes('device_offline');
+    document.getElementById('trigger-sms').checked     = cfg.triggers.includes('new_sms');
+  }
+  document.getElementById('remove-alert-btn').disabled = !_alertHasExisting;
+  document.getElementById('telegram-alert-modal').classList.add('open');
+}
+function closeAlertModal() {
+  document.getElementById('telegram-alert-modal').classList.remove('open');
+  _alertModalDeviceId = null; _alertModalBrand = null;
+}
+async function saveAlert() {
+  const botId   = document.getElementById('alert-bot-select').value;
+  const chatId  = document.getElementById('alert-chat-id').value.trim();
+  const triggers = ['trigger-online','trigger-offline','trigger-sms']
+    .filter(id => document.getElementById(id).checked)
+    .map(id => document.getElementById(id).value);
+  const status = document.getElementById('alert-modal-status');
+  let valid = true;
+  _hideFieldError('alert-bot-error'); _hideFieldError('alert-chatid-error'); _hideFieldError('alert-trigger-error');
+  status.textContent = '';
+  if (!botId)           { _showFieldError('alert-bot-error',     'Please select a bot.');       valid = false; }
+  if (!chatId)          { _showFieldError('alert-chatid-error',  'Chat ID is required.');       valid = false; }
+  if (!triggers.length) { _showFieldError('alert-trigger-error', 'Select at least one trigger.'); valid = false; }
+  if (!valid) return;
+  try {
+    const res  = await fetch(`/api/telegram/alerts/${currentMode}/${_alertModalDeviceId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bot_id: botId, chat_id: chatId, triggers }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      currentAlertConfigs[_alertModalDeviceId] = data;
+      _updateBellIcon(_alertModalDeviceId, true);
+      closeAlertModal();
+    } else { status.textContent = data.error || 'Failed to save alert.'; }
+  } catch (e) { status.textContent = 'Network error. Could not save alert.'; }
+}
+async function removeAlert() {
+  const status = document.getElementById('alert-modal-status');
+  status.textContent = '';
+  try {
+    const res = await fetch(`/api/telegram/alerts/${currentMode}/${_alertModalDeviceId}`, { method: 'DELETE' });
+    if (res.status === 204) {
+      delete currentAlertConfigs[_alertModalDeviceId];
+      _updateBellIcon(_alertModalDeviceId, false);
+      closeAlertModal();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      status.textContent = d.error || 'Failed to remove alert.';
+    }
+  } catch (e) { status.textContent = 'Network error. Could not remove alert.'; }
+}
+
+// ── Bell icon helpers ─────────────────────────────────────────────────────────
+function _updateBellIcon(deviceId, active) {
+  const btn = document.querySelector(`.bell-btn[data-device-id="${deviceId}"]`);
+  if (!btn) return;
+  btn.classList.toggle('active', active);
+  btn.title = active ? 'Alert configured' : 'No alert configured';
+}
+async function loadAlertConfigsForUrlSet() {
+  currentAlertConfigs = {};
+  try {
+    const res = await fetch(`/api/telegram/alerts/${currentMode}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    currentAlertConfigs = await res.json();
+    _refreshAllBells();
+  } catch (e) {
+    console.warn('[AlertConfigs] Failed to load:', e.message);
+    _showAlertLoadError();
+  }
+}
+function _refreshAllBells() {
+  document.querySelectorAll('.bell-btn[data-device-id]').forEach(btn => {
+    const active = !!currentAlertConfigs[btn.dataset.deviceId];
+    btn.classList.toggle('active', active);
+    btn.title = active ? 'Alert configured' : 'No alert configured';
+  });
+}
+function _showAlertLoadError() {
+  if (document.getElementById('alert-load-warning')) return;
+  const el = document.createElement('div');
+  el.id = 'alert-load-warning';
+  el.style.cssText = 'color:#f59e0b;font-size:0.8rem;margin:4px 0;padding:4px 8px;background:var(--bg2);border-radius:4px;display:inline-block';
+  el.textContent = '⚠ Alert configuration data could not be loaded. Bell icons may be inaccurate.';
+  const wrap = document.getElementById('device-table-wrap');
+  if (wrap) wrap.prepend(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
+// ── Integration: wrap openUrl to load alert configs ───────────────────────────
+const _origOpenUrl = openUrl;
+openUrl = async function(id) {
+  await _origOpenUrl.call(this, id);
+  loadAlertConfigsForUrlSet();
+};
+
+// ── Integration: wrap renderDevices to add bell icons ────────────────────────
+if (typeof renderDevices === 'function') {
+  const _origRenderDevices = renderDevices;
+  renderDevices = function(...args) {
+    _origRenderDevices.apply(this, args);
+    // After render completes, append bell buttons to each row's last <td>
+    document.querySelectorAll('#device-tbody tr').forEach((row, idx) => {
+      const lastTd = row.querySelector('td:last-child');
+      if (!lastTd || lastTd.querySelector('.bell-btn')) return;
+      const deviceId = currentDevices[idx]?.deviceId;
+      const brand    = currentDevices[idx]?.brand || 'Unknown';
+      if (!deviceId) return;
+      const btn = document.createElement('button');
+      btn.className = 'bell-btn' + (currentAlertConfigs[deviceId] ? ' active' : '');
+      btn.dataset.deviceId = deviceId;
+      btn.title = currentAlertConfigs[deviceId] ? 'Alert configured' : 'No alert configured';
+      btn.textContent = '🔔';
+      btn.onclick = () => openAlertModal(deviceId, brand);
+      lastTd.appendChild(btn);
+    });
+  };
+}
 </script>
+
+<!-- ── Telegram Bot Setup Modal ── -->
+<div class="modal-overlay" id="telegram-setup-modal" onclick="if(event.target===this)closeTelegramSetup()">
+  <div class="modal-box" style="max-width:520px">
+    <button class="modal-close" onclick="closeTelegramSetup()">✕ Close</button>
+    <h3>🤖 Telegram Bots</h3>
+    <p style="font-size:0.85rem;color:var(--muted);margin-bottom:12px">
+      Create a bot via @BotFather on Telegram, copy the token, and paste it below.
+    </p>
+    <div id="bot-list" style="margin-bottom:16px;min-height:24px"></div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div>
+        <input id="new-bot-name" type="text" placeholder="Bot Name" maxlength="100"
+               class="sim-edit-input" style="width:100%;box-sizing:border-box" />
+        <div class="field-error" id="bot-name-error">Bot name is required.</div>
+      </div>
+      <div>
+        <input id="new-bot-token" type="text" placeholder="Bot Token (from BotFather)" maxlength="200"
+               class="sim-edit-input" style="width:100%;box-sizing:border-box" />
+        <div class="field-error" id="bot-token-error">Bot token is required.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" onclick="addBot()">➕ Add Bot</button>
+        <span id="bot-form-status" style="font-size:0.85rem;color:var(--red)"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Telegram Alert Config Modal ── -->
+<div class="modal-overlay" id="telegram-alert-modal" onclick="if(event.target===this)closeAlertModal()">
+  <div class="modal-box" style="max-width:480px">
+    <button class="modal-close" onclick="closeAlertModal()">✕ Close</button>
+    <h3>🔔 Configure Alert</h3>
+    <p id="alert-modal-device-heading" style="font-size:0.9rem;color:var(--muted);margin-bottom:14px"></p>
+    <div style="margin-bottom:10px">
+      <label style="font-size:0.85rem;display:block;margin-bottom:4px">Bot</label>
+      <select id="alert-bot-select" style="width:100%;padding:6px;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+        <option value="" disabled selected>— Select a bot —</option>
+      </select>
+      <div class="field-error" id="alert-bot-error">Please select a bot.</div>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:0.85rem;display:block;margin-bottom:4px">Chat ID</label>
+      <input id="alert-chat-id" type="text" placeholder="e.g. -1001234567890" maxlength="39"
+             class="sim-edit-input" style="width:100%;box-sizing:border-box" />
+      <div class="field-error" id="alert-chatid-error">Chat ID is required.</div>
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:0.85rem;display:block;margin-bottom:6px">Triggers</label>
+      <div class="trigger-group">
+        <label><input type="checkbox" id="trigger-online"  value="device_online"  /> Device comes online</label>
+        <label><input type="checkbox" id="trigger-offline" value="device_offline" /> Device goes offline</label>
+        <label><input type="checkbox" id="trigger-sms"     value="new_sms"        /> New SMS received</label>
+      </div>
+      <div class="field-error" id="alert-trigger-error">Select at least one trigger.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn" onclick="saveAlert()">💾 Save Alert</button>
+      <button class="btn btn-ghost" id="remove-alert-btn" onclick="removeAlert()" disabled>🗑 Remove Alert</button>
+      <button class="btn btn-ghost" onclick="closeAlertModal()">Cancel</button>
+    </div>
+    <div id="alert-modal-status" style="font-size:0.85rem;color:var(--red);margin-top:8px"></div>
+  </div>
+</div>
+
 </body>
 </html>

