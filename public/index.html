@@ -1267,8 +1267,12 @@ async function loadBotsForModal() {
     list.innerHTML = bots.map(b => `
       <div class="bot-list-item">
         <span title="${_esc(b.name)}">${_esc(b.name)}</span>
-        <button class="btn btn-ghost" style="font-size:0.8rem;padding:3px 8px"
-                onclick="deleteBot('${_esc(b.id)}','${_esc(b.name)}')">Delete</button>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 7px"
+                  onclick="syncBotSubs('${_esc(b.id)}', this)">🔄 Sync</button>
+          <button class="btn btn-ghost" style="font-size:0.8rem;padding:3px 8px"
+                  onclick="deleteBot('${_esc(b.id)}','${_esc(b.name)}')">Delete</button>
+        </div>
       </div>`).join('');
   } catch (e) {
     list.innerHTML = '<p style="color:var(--red);font-size:0.85rem">Failed to load bots.</p>';
@@ -1302,6 +1306,18 @@ async function deleteBot(id, name) {
     if (res.status === 204) loadBotsForModal();
     else { const d = await res.json().catch(() => ({})); alert(d.error || 'Failed to delete bot.'); }
   } catch (e) { alert('Network error. Could not delete bot.'); }
+}
+
+async function syncBotSubs(id, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res  = await fetch(`/api/telegram/bots/${id}/sync`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) btn.textContent = `✓ ${data.subscribers}`;
+    else        btn.textContent = '✗';
+  } catch (e)  { btn.textContent = '✗'; }
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
 }
 
 async function broadcastToSubscribers() {
@@ -1368,12 +1384,11 @@ async function openAlertModal(deviceId, brand) {
   _alertHasExisting   = false;
   document.getElementById('alert-modal-status').textContent = '';
   document.getElementById('alert-modal-device-heading').textContent = `Device: ${deviceId}  |  ${brand}`;
-  document.getElementById('alert-chat-id').value = '';
   document.getElementById('trigger-online').checked  = false;
   document.getElementById('trigger-offline').checked = false;
   document.getElementById('trigger-sms').checked     = false;
+  document.getElementById('alert-subscriber-info').textContent = '';
   _hideFieldError('alert-bot-error');
-  _hideFieldError('alert-chatid-error');
   _hideFieldError('alert-trigger-error');
 
   const select = document.getElementById('alert-bot-select');
@@ -1392,13 +1407,43 @@ async function openAlertModal(deviceId, brand) {
   if (cfg) {
     _alertHasExisting = true;
     select.value = cfg.bot_id;
-    document.getElementById('alert-chat-id').value          = cfg.chat_id || '';
     document.getElementById('trigger-online').checked  = cfg.triggers.includes('device_online');
     document.getElementById('trigger-offline').checked = cfg.triggers.includes('device_offline');
     document.getElementById('trigger-sms').checked     = cfg.triggers.includes('new_sms');
+    // Show subscriber count for pre-selected bot
+    _loadSubscriberInfo(cfg.bot_id);
   }
   document.getElementById('remove-alert-btn').disabled = !_alertHasExisting;
   document.getElementById('telegram-alert-modal').classList.add('open');
+}
+
+// Show subscriber count when bot is changed in dropdown
+document.addEventListener('change', function(e) {
+  if (e.target && e.target.id === 'alert-bot-select') {
+    _loadSubscriberInfo(e.target.value);
+  }
+});
+
+async function _loadSubscriberInfo(botId) {
+  const infoEl = document.getElementById('alert-subscriber-info');
+  if (!infoEl || !botId) return;
+  infoEl.textContent = 'Fetching subscribers…';
+  try {
+    const res  = await fetch(`/api/telegram/bots/${botId}/subscribers`);
+    const data = await res.json();
+    if (res.ok) {
+      infoEl.style.color = data.total > 0 ? 'var(--green)' : 'var(--yellow)';
+      infoEl.textContent = data.total > 0
+        ? `✓ ${data.total} subscriber(s) — alerts will go to all of them`
+        : '⚠ No subscribers yet. Have users send /start to this bot first.';
+    } else {
+      infoEl.style.color = 'var(--red)';
+      infoEl.textContent = data.error || 'Could not fetch subscribers.';
+    }
+  } catch (e) {
+    infoEl.style.color = 'var(--muted)';
+    infoEl.textContent = 'Could not fetch subscriber count.';
+  }
 }
 function closeAlertModal() {
   document.getElementById('telegram-alert-modal').classList.remove('open');
@@ -1406,22 +1451,20 @@ function closeAlertModal() {
 }
 async function saveAlert() {
   const botId   = document.getElementById('alert-bot-select').value;
-  const chatId  = document.getElementById('alert-chat-id').value.trim();
   const triggers = ['trigger-online','trigger-offline','trigger-sms']
     .filter(id => document.getElementById(id).checked)
     .map(id => document.getElementById(id).value);
   const status = document.getElementById('alert-modal-status');
   let valid = true;
-  _hideFieldError('alert-bot-error'); _hideFieldError('alert-chatid-error'); _hideFieldError('alert-trigger-error');
+  _hideFieldError('alert-bot-error'); _hideFieldError('alert-trigger-error');
   status.textContent = '';
-  if (!botId)           { _showFieldError('alert-bot-error',     'Please select a bot.');       valid = false; }
-  if (!chatId)          { _showFieldError('alert-chatid-error',  'Chat ID is required.');       valid = false; }
+  if (!botId)           { _showFieldError('alert-bot-error',     'Please select a bot.');         valid = false; }
   if (!triggers.length) { _showFieldError('alert-trigger-error', 'Select at least one trigger.'); valid = false; }
   if (!valid) return;
   try {
     const res  = await fetch(`/api/telegram/alerts/${currentMode}/${_alertModalDeviceId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bot_id: botId, chat_id: chatId, triggers }),
+      body: JSON.stringify({ bot_id: botId, triggers }),
     });
     const data = await res.json();
     if (res.ok) {
@@ -1576,12 +1619,7 @@ if (typeof renderDevices === 'function') {
         <option value="" disabled selected>— Select a bot —</option>
       </select>
       <div class="field-error" id="alert-bot-error">Please select a bot.</div>
-    </div>
-    <div style="margin-bottom:10px">
-      <label style="font-size:0.85rem;display:block;margin-bottom:4px">Chat ID</label>
-      <input id="alert-chat-id" type="text" placeholder="e.g. -1001234567890" maxlength="39"
-             class="sim-edit-input" style="width:100%;box-sizing:border-box" />
-      <div class="field-error" id="alert-chatid-error">Chat ID is required.</div>
+      <div id="alert-subscriber-info" style="font-size:0.8rem;color:var(--muted);margin-top:4px"></div>
     </div>
     <div style="margin-bottom:14px">
       <label style="font-size:0.85rem;display:block;margin-bottom:6px">Triggers</label>
@@ -1592,6 +1630,9 @@ if (typeof renderDevices === 'function') {
       </div>
       <div class="field-error" id="alert-trigger-error">Select at least one trigger.</div>
     </div>
+    <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">
+      📡 Alerts will be sent to <b>all subscribers</b> of the selected bot (everyone who has sent a message to it).
+    </p>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn" onclick="saveAlert()">💾 Save Alert</button>
       <button class="btn btn-ghost" id="remove-alert-btn" onclick="removeAlert()" disabled>🗑 Remove Alert</button>

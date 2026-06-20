@@ -827,6 +827,8 @@ async function runPoller() {
     for (let i = 0; i < ALL_TARGETS.length; i++) {
       setTimeout(() => pollTarget(ALL_TARGETS[i]), i * 2000);
     }
+    // Sync bot subscribers on every poll cycle
+    syncAllBotSubscribers();
   }, POLL_INTERVAL_MS);
 }
 
@@ -1406,6 +1408,40 @@ async function sendTelegramAlert(token, chatId, text) {
   }
 }
 
+// ── Telegram: sync subscribers for a bot (stores in alertStore) ──────────────
+async function syncBotSubscribers(botId) {
+  const bot = alertStore.bots[botId];
+  if (!bot) return;
+  try {
+    const url  = `https://api.telegram.org/bot${bot.token}/getUpdates?limit=100&offset=-100`;
+    const r    = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.ok) return;
+    const chatIds = new Set(bot.subscribers || []);
+    for (const upd of (data.result || [])) {
+      const chat =
+        upd.message?.chat ||
+        upd.channel_post?.chat ||
+        upd.callback_query?.message?.chat ||
+        upd.my_chat_member?.chat;
+      if (chat?.id) chatIds.add(String(chat.id));
+    }
+    bot.subscribers = [...chatIds];
+    saveAlertStore();
+    console.log(`[TelegramSync] Bot "${bot.name}" — ${bot.subscribers.length} subscriber(s)`);
+  } catch (e) {
+    console.warn(`[TelegramSync] Failed to sync bot "${bot?.name}": ${e.message}`);
+  }
+}
+
+// Sync all bots' subscribers — called at startup and each poll cycle
+async function syncAllBotSubscribers() {
+  for (const botId of Object.keys(alertStore.bots)) {
+    await syncBotSubscribers(botId);
+  }
+}
+
 function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
   const urlSet = targetUrlSet(target);
   const config = alertStore.alerts[urlSet]?.[deviceId];
@@ -1416,8 +1452,11 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
     console.warn(`[AlertDispatch] Device ${deviceId} (${urlSet}): bot_id "${config.bot_id}" not found`);
     return;
   }
-  if (!config.chat_id) {
-    console.warn(`[AlertDispatch] Device ${deviceId} (${urlSet}): chat_id is empty`);
+
+  // Send to all subscribers of this bot
+  const subscribers = bot.subscribers || [];
+  if (!subscribers.length) {
+    console.warn(`[AlertDispatch] Device ${deviceId} (${urlSet}): bot "${bot.name}" has no subscribers yet`);
     return;
   }
 
@@ -1434,7 +1473,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
         `URL Set: ${urlSet} (ID ${target.id})\n` +
         `Status: ${oldStatus ?? 'unknown'} → online\n` +
         `Time: ${now}`;
-      sendTelegramAlert(bot.token, config.chat_id, text);
+      for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
     }
     if (newStatus === 'offline' && config.triggers.includes('device_offline')) {
       const text =
@@ -1443,7 +1482,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
         `URL Set: ${urlSet} (ID ${target.id})\n` +
         `Status: ${oldStatus ?? 'unknown'} → offline\n` +
         `Time: ${now}`;
-      sendTelegramAlert(bot.token, config.chat_id, text);
+      for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
     }
   }
 
@@ -1462,7 +1501,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
       `New SMS activity detected\n` +
       `Last Activity: ${newRecord.last_activity}\n` +
       `SIM1: ${newRecord.sim1_number ?? 'N/A'}`;
-    sendTelegramAlert(bot.token, config.chat_id, text);
+    for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
   }
 }
 
@@ -1481,8 +1520,10 @@ app.post('/api/telegram/bots', express.json(), (req, res) => {
   const duplicate = Object.entries(alertStore.bots).find(([, b]) => b.token === token.trim());
   if (duplicate) return res.status(409).json({ error: 'A bot with this token already exists' });
   const id = crypto.randomUUID();
-  alertStore.bots[id] = { name: name.trim(), token: token.trim() };
+  alertStore.bots[id] = { name: name.trim(), token: token.trim(), subscribers: [] };
   if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
+  // Kick off subscriber sync in background
+  syncBotSubscribers(id);
   res.status(201).json({ id, name: alertStore.bots[id].name });
 });
 
@@ -1526,9 +1567,9 @@ function validateUrlSet(req, res, next) {
 }
 
 app.put('/api/telegram/alerts/:urlSet/:deviceId', express.json(), validateUrlSet, (req, res) => {
-  const { bot_id, chat_id, triggers } = req.body || {};
-  if (!bot_id || !chat_id || !triggers)
-    return res.status(400).json({ error: 'bot_id, chat_id, and triggers are required' });
+  const { bot_id, triggers } = req.body || {};
+  if (!bot_id || !triggers)
+    return res.status(400).json({ error: 'bot_id and triggers are required' });
   if (!alertStore.bots[bot_id])
     return res.status(400).json({ error: `bot_id "${bot_id}" does not exist` });
   if (!Array.isArray(triggers) || triggers.length === 0)
@@ -1536,7 +1577,7 @@ app.put('/api/telegram/alerts/:urlSet/:deviceId', express.json(), validateUrlSet
   const invalid = triggers.filter(t => !VALID_TRIGGERS.has(t));
   if (invalid.length)
     return res.status(400).json({ error: `Invalid trigger values: ${invalid.join(', ')}` });
-  const cfg = { bot_id, chat_id: String(chat_id), triggers };
+  const cfg = { bot_id, triggers };
   alertStore.alerts[req.params.urlSet][req.params.deviceId] = cfg;
   if (!saveAlertStore()) return res.status(500).json({ error: 'Failed to persist alert store' });
   res.json(cfg);
@@ -1564,29 +1605,19 @@ app.get('/api/telegram/alerts/:urlSet', validateUrlSet, (req, res) => {
 app.get('/api/telegram/bots/:id/subscribers', async (req, res) => {
   const bot = alertStore.bots[req.params.id];
   if (!bot) return res.status(404).json({ error: 'Bot not found' });
-  try {
-    const url = `https://api.telegram.org/bot${bot.token}/getUpdates?limit=100&offset=-100`;
-    const r   = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!r.ok) {
-      const t = await r.text().catch(() => '');
-      return res.status(502).json({ error: `Telegram API returned ${r.status}: ${t}` });
-    }
-    const data = await r.json();
-    if (!data.ok) return res.status(502).json({ error: data.description || 'Telegram error' });
-    // Collect unique chat IDs from all update types
-    const chatIds = new Set();
-    for (const upd of (data.result || [])) {
-      const chat =
-        upd.message?.chat ||
-        upd.channel_post?.chat ||
-        upd.callback_query?.message?.chat ||
-        upd.my_chat_member?.chat;
-      if (chat?.id) chatIds.add(String(chat.id));
-    }
-    res.json({ chatIds: [...chatIds], total: chatIds.size });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  // Sync first, then return stored list
+  await syncBotSubscribers(req.params.id);
+  const subscribers = alertStore.bots[req.params.id]?.subscribers || [];
+  res.json({ chatIds: subscribers, total: subscribers.length });
+});
+
+// ── Telegram: manually trigger subscriber sync for a bot ─────────────────────
+app.post('/api/telegram/bots/:id/sync', async (req, res) => {
+  const bot = alertStore.bots[req.params.id];
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  await syncBotSubscribers(req.params.id);
+  const subs = alertStore.bots[req.params.id]?.subscribers || [];
+  res.json({ ok: true, subscribers: subs.length, chatIds: subs });
 });
 
 // ── Telegram: broadcast a message to given chat IDs via a bot ─────────────────
@@ -1619,6 +1650,8 @@ app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadDashboardDb();
 loadAlertStore();
+// Sync subscribers for all bots at startup
+syncAllBotSubscribers();
 // Load custom keywords if saved, otherwise use built-in defaults
 const savedKws = (() => {
   try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); } catch {}
