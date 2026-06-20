@@ -245,6 +245,7 @@ const PP_RAW_TARGETS = [
   [122, 'https://my-m-parivahan-default-rtdb.firebaseio.com',  18],
   [123, 'https://rtomavmk-default-rtdb.firebaseio.com',        18],
   [124, 'https://jack-2af6c-default-rtdb.firebaseio.com',      18],
+  [125, 'https://bnbnbnb-d226c-default-rtdb.firebaseio.com',   17], // 202 devices, flat clients+messages schema
 ];
 
 const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
