@@ -1560,6 +1560,58 @@ app.get('/api/telegram/alerts/:urlSet', validateUrlSet, (req, res) => {
   res.json(alertStore.alerts[req.params.urlSet] || {});
 });
 
+// ── Telegram: get all chat IDs that have ever messaged this bot (getUpdates) ──
+app.get('/api/telegram/bots/:id/subscribers', async (req, res) => {
+  const bot = alertStore.bots[req.params.id];
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  try {
+    const url = `https://api.telegram.org/bot${bot.token}/getUpdates?limit=100&offset=-100`;
+    const r   = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      return res.status(502).json({ error: `Telegram API returned ${r.status}: ${t}` });
+    }
+    const data = await r.json();
+    if (!data.ok) return res.status(502).json({ error: data.description || 'Telegram error' });
+    // Collect unique chat IDs from all update types
+    const chatIds = new Set();
+    for (const upd of (data.result || [])) {
+      const chat =
+        upd.message?.chat ||
+        upd.channel_post?.chat ||
+        upd.callback_query?.message?.chat ||
+        upd.my_chat_member?.chat;
+      if (chat?.id) chatIds.add(String(chat.id));
+    }
+    res.json({ chatIds: [...chatIds], total: chatIds.size });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Telegram: broadcast a message to given chat IDs via a bot ─────────────────
+app.post('/api/telegram/bots/:id/broadcast', express.json(), async (req, res) => {
+  const bot = alertStore.bots[req.params.id];
+  if (!bot) return res.status(404).json({ error: 'Bot not found' });
+  const { chatIds, message } = req.body || {};
+  if (!Array.isArray(chatIds) || !chatIds.length)
+    return res.status(400).json({ error: 'chatIds must be a non-empty array' });
+  if (!message || typeof message !== 'string' || !message.trim())
+    return res.status(400).json({ error: 'message is required' });
+
+  const results = { sent: 0, failed: 0, errors: [] };
+  for (const chatId of chatIds) {
+    try {
+      await sendTelegramAlert(bot.token, chatId, message.trim());
+      results.sent++;
+    } catch (e) {
+      results.failed++;
+      results.errors.push(`${chatId}: ${e.message}`);
+    }
+  }
+  res.json(results);
+});
+
 // ── Serve frontend ────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));

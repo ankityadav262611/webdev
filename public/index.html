@@ -1304,6 +1304,63 @@ async function deleteBot(id, name) {
   } catch (e) { alert('Network error. Could not delete bot.'); }
 }
 
+async function broadcastToSubscribers() {
+  const botId   = document.getElementById('broadcast-bot-select').value;
+  const message = document.getElementById('broadcast-message').value.trim();
+  const status  = document.getElementById('broadcast-status');
+  if (!botId)   { status.style.color = 'var(--red)'; status.textContent = 'Select a bot first.'; return; }
+  if (!message) { status.style.color = 'var(--red)'; status.textContent = 'Enter a message.'; return; }
+
+  status.style.color = 'var(--muted)';
+  status.textContent = 'Fetching subscribers…';
+  try {
+    // Step 1: get subscribers
+    const subRes  = await fetch(`/api/telegram/bots/${botId}/subscribers`);
+    const subData = await subRes.json();
+    if (!subRes.ok) { status.style.color='var(--red)'; status.textContent = subData.error || 'Failed to fetch subscribers.'; return; }
+    if (!subData.total) { status.style.color='var(--muted)'; status.textContent = 'No subscribers found (no one has messaged this bot yet).'; return; }
+
+    status.textContent = `Sending to ${subData.total} subscriber(s)…`;
+
+    // Step 2: broadcast
+    const bcRes  = await fetch(`/api/telegram/bots/${botId}/broadcast`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatIds: subData.chatIds, message }),
+    });
+    const bcData = await bcRes.json();
+    if (bcRes.ok) {
+      status.style.color = 'var(--green)';
+      status.textContent = `✓ Sent to ${bcData.sent} chat(s)${bcData.failed ? `, ${bcData.failed} failed` : ''}.`;
+      document.getElementById('broadcast-message').value = '';
+    } else {
+      status.style.color = 'var(--red)';
+      status.textContent = bcData.error || 'Broadcast failed.';
+    }
+  } catch (e) {
+    status.style.color = 'var(--red)';
+    status.textContent = 'Network error. Could not broadcast.';
+  }
+}
+
+// Populate broadcast bot dropdown when Setup modal opens
+const _origLoadBots = loadBotsForModal;
+loadBotsForModal = async function() {
+  await _origLoadBots();
+  // also refresh broadcast dropdown
+  const sel = document.getElementById('broadcast-bot-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="" disabled selected>— Select a bot —</option>';
+  try {
+    const res  = await fetch('/api/telegram/bots');
+    const bots = await res.json();
+    bots.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.id; opt.textContent = b.name;
+      sel.appendChild(opt);
+    });
+  } catch {}
+};
+
 // ── Alert Modal ───────────────────────────────────────────────────────────────
 async function openAlertModal(deviceId, brand) {
   _alertModalDeviceId = deviceId;
@@ -1481,6 +1538,27 @@ if (typeof renderDevices === 'function') {
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn" onclick="addBot()">➕ Add Bot</button>
         <span id="bot-form-status" style="font-size:0.85rem;color:var(--red)"></span>
+      </div>
+    </div>
+
+    <!-- Broadcast section -->
+    <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+      <h4 style="font-size:0.9rem;margin-bottom:8px">📢 Broadcast to All Subscribers</h4>
+      <p style="font-size:0.8rem;color:var(--muted);margin-bottom:8px">
+        Sends a message to every chat ID that has ever messaged the selected bot.
+      </p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <select id="broadcast-bot-select"
+                style="width:100%;padding:6px;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+          <option value="" disabled selected>— Select a bot —</option>
+        </select>
+        <textarea id="broadcast-message" rows="3"
+                  placeholder="Message to broadcast…"
+                  style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 10px;font-size:13px;resize:vertical"></textarea>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn" onclick="broadcastToSubscribers()">📤 Send Broadcast</button>
+          <span id="broadcast-status" style="font-size:0.85rem;color:var(--muted)"></span>
+        </div>
       </div>
     </div>
   </div>
