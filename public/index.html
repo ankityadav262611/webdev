@@ -203,6 +203,40 @@
   .trigger-group label { display:flex; align-items:center; gap:8px; cursor:pointer; }
   .field-error { color:#ef4444; font-size:0.82rem; margin-top:3px; display:none; }
   .field-error.visible { display:block; }
+
+  /* ── Notification bell ── */
+  .notif-btn { position:relative; background:none; border:none; cursor:pointer; font-size:1.2rem;
+               padding:4px 6px; color:var(--muted); }
+  .notif-btn:hover { color:var(--text); }
+  .notif-badge { position:absolute; top:0; right:0; background:var(--red); color:#fff;
+                 border-radius:50%; width:16px; height:16px; font-size:10px; font-weight:700;
+                 display:flex; align-items:center; justify-content:center; pointer-events:none; }
+  .notif-badge.hidden { display:none; }
+  .notif-dropdown { position:absolute; top:calc(100% + 8px); right:0; width:360px; max-height:460px;
+                    background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+                    overflow-y:auto; z-index:2000; box-shadow:0 8px 30px rgba(0,0,0,.5); display:none; }
+  .notif-dropdown.open { display:block; }
+  .notif-header { display:flex; align-items:center; justify-content:space-between;
+                  padding:10px 14px; border-bottom:1px solid var(--border); }
+  .notif-header span { font-size:13px; font-weight:600; }
+  .notif-item { padding:10px 14px; border-bottom:1px solid var(--border); cursor:default; }
+  .notif-item:last-child { border-bottom:none; }
+  .notif-item:hover { background:var(--bg3); }
+  .notif-item .ni-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .notif-item .ni-type { font-size:11px; font-weight:600; }
+  .notif-item .ni-ts   { font-size:10px; color:var(--muted); }
+  .notif-item .ni-text { font-size:11px; color:var(--muted); white-space:pre-wrap; word-break:break-word; }
+  .notif-empty { text-align:center; padding:30px; color:var(--muted); font-size:13px; }
+
+  /* ── Home toast banner ── */
+  #notif-toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+                 background:var(--bg2); border:1px solid var(--accent); border-radius:10px;
+                 padding:10px 20px; font-size:13px; color:var(--text); z-index:3000;
+                 box-shadow:0 4px 20px rgba(0,0,0,.5); display:none; max-width:480px;
+                 text-align:center; pointer-events:none; }
+  #notif-toast.show { display:block; animation:toastIn .25s ease; }
+  @keyframes toastIn { from { opacity:0; transform:translateX(-50%) translateY(12px); }
+                       to   { opacity:1; transform:translateX(-50%) translateY(0); } }
 </style>
 </head>
 <body>
@@ -216,6 +250,19 @@
   </div>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or Device ID…">
+    <!-- Notification bell -->
+    <div style="position:relative">
+      <button class="notif-btn" id="notif-bell-btn" onclick="toggleNotifDropdown()" title="Notifications">
+        🔔<span class="notif-badge hidden" id="notif-badge">0</span>
+      </button>
+      <div class="notif-dropdown" id="notif-dropdown">
+        <div class="notif-header">
+          <span>🔔 Alert History</span>
+          <button class="btn btn-ghost" style="font-size:11px;padding:2px 8px" onclick="clearNotifications()">Clear all</button>
+        </div>
+        <div id="notif-list"><div class="notif-empty">No alerts yet</div></div>
+      </div>
+    </div>
     <button class="btn btn-ghost" id="refresh-btn" onclick="refreshUrlList()">↻ Refresh</button>
   </div>
 </header>
@@ -1624,6 +1671,128 @@ async function _refreshAlertDevicesCount() {
 // Refresh alert count when home page loads
 _refreshAlertDevicesCount();
 
+// ── Notification System ───────────────────────────────────────────────────────
+let _notifLastSeen  = null; // ISO timestamp of most recent entry when we last checked
+let _notifUnread    = 0;
+let _notifAllEntries = [];
+let _notifDropOpen  = false;
+const _NOTIF_POLL_MS = 30000; // poll every 30s
+
+async function fetchNotifications(since) {
+  const url = since ? `/api/notifications?limit=50&since=${encodeURIComponent(since)}` : '/api/notifications?limit=50';
+  const res = await fetch(url);
+  return await res.json();
+}
+
+async function _pollNotifications() {
+  try {
+    // Full fetch to refresh list
+    const data = await fetchNotifications();
+    const entries = data.entries || [];
+    // Count new entries since last seen
+    const newest = entries[0]?.ts || null;
+    if (_notifLastSeen && newest && newest > _notifLastSeen) {
+      const newOnes = entries.filter(e => e.ts > _notifLastSeen);
+      _notifUnread += newOnes.length;
+      _showToast(newOnes);
+    }
+    _notifAllEntries = entries;
+    _renderNotifList();
+    _updateNotifBadge();
+  } catch {}
+}
+
+function _updateNotifBadge() {
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  if (_notifUnread > 0) {
+    badge.textContent = _notifUnread > 99 ? '99+' : _notifUnread;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+function _renderNotifList() {
+  const list = document.getElementById('notif-list');
+  if (!list) return;
+  if (!_notifAllEntries.length) {
+    list.innerHTML = '<div class="notif-empty">No alerts sent yet</div>';
+    return;
+  }
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const typeIcon = t => t === 'device_online' ? '🟢' : t === 'device_offline' ? '🔴' : '📩';
+  const typeLabel = t => t === 'device_online' ? 'Online' : t === 'device_offline' ? 'Offline' : 'New SMS';
+  const relTime = ts => {
+    const diff = Date.now() - new Date(ts).getTime();
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
+    return new Date(ts).toLocaleDateString();
+  };
+  list.innerHTML = _notifAllEntries.map(e => `
+    <div class="notif-item">
+      <div class="ni-top">
+        <span class="ni-type">${typeIcon(e.type)} ${typeLabel(e.type)} — <code style="font-size:10px">${esc(e.deviceId?.slice(0,12))}…</code></span>
+        <span class="ni-ts">${relTime(e.ts)}</span>
+      </div>
+      <div class="ni-text">${esc(e.botName)} · ${e.urlSet?.toUpperCase()} · ${e.chatCount} subscriber(s)</div>
+    </div>`).join('');
+}
+
+function toggleNotifDropdown() {
+  _notifDropOpen = !_notifDropOpen;
+  const dd = document.getElementById('notif-dropdown');
+  if (_notifDropOpen) {
+    dd.classList.add('open');
+    // Mark all as read
+    _notifLastSeen = _notifAllEntries[0]?.ts || _notifLastSeen;
+    _notifUnread = 0;
+    _updateNotifBadge();
+    _renderNotifList();
+  } else {
+    dd.classList.remove('open');
+  }
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', e => {
+  if (_notifDropOpen && !e.target.closest('#notif-bell-btn') && !e.target.closest('#notif-dropdown')) {
+    _notifDropOpen = false;
+    document.getElementById('notif-dropdown').classList.remove('open');
+  }
+});
+
+async function clearNotifications() {
+  await fetch('/api/notifications', { method: 'DELETE' });
+  _notifAllEntries = [];
+  _notifUnread = 0;
+  _notifLastSeen = null;
+  _renderNotifList();
+  _updateNotifBadge();
+}
+
+let _toastTimer = null;
+function _showToast(newEntries) {
+  const toast = document.getElementById('notif-toast');
+  if (!toast) return;
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const typeIcon = t => t === 'device_online' ? '🟢' : t === 'device_offline' ? '🔴' : '📩';
+  if (newEntries.length === 1) {
+    const e = newEntries[0];
+    toast.innerHTML = `${typeIcon(e.type)} <b>${esc(e.botName)}</b> — ${esc(e.deviceId?.slice(0,14))} (${e.urlSet?.toUpperCase()})`;
+  } else {
+    toast.innerHTML = `🔔 <b>${newEntries.length} new alert(s)</b> sent to Telegram`;
+  }
+  toast.classList.add('show');
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { toast.classList.remove('show'); }, 5000);
+}
+
+// Initial load + start polling
+_pollNotifications();
+setInterval(_pollNotifications, _NOTIF_POLL_MS);
+
 // ── Integration: wrap openUrl to load alert configs ───────────────────────────
 const _origOpenUrl = openUrl;openUrl = async function(id) {
   await _origOpenUrl.call(this, id);
@@ -1653,6 +1822,9 @@ if (typeof renderDevices === 'function') {
   };
 }
 </script>
+
+<!-- ── Notification Toast ── -->
+<div id="notif-toast"></div>
 
 <!-- ── Telegram Bot Setup Modal ── -->
 <div class="modal-overlay" id="telegram-setup-modal" onclick="if(event.target===this)closeTelegramSetup()">

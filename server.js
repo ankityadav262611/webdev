@@ -1425,6 +1425,28 @@ function targetUrlSet(target) {
   return 'new';
 }
 
+// ── Alert Notification Log ────────────────────────────────────────────────────
+const ALERT_LOG_FILE = path.join(DATA_DIR, 'alert_log.json');
+const MAX_LOG_ENTRIES = 200;
+let alertLog = []; // [{ id, ts, botName, deviceId, urlSet, targetId, type, text, chatCount }]
+
+function loadAlertLog() {
+  try {
+    if (fs.existsSync(ALERT_LOG_FILE)) alertLog = JSON.parse(fs.readFileSync(ALERT_LOG_FILE, 'utf8'));
+    if (!Array.isArray(alertLog)) alertLog = [];
+  } catch { alertLog = []; }
+}
+function saveAlertLog() {
+  try { fs.writeFileSync(ALERT_LOG_FILE, JSON.stringify(alertLog, null, 2)); } catch {}
+}
+function appendAlertLog(entry) {
+  alertLog.unshift({ id: crypto.randomUUID(), ts: new Date().toISOString(), ...entry });
+  if (alertLog.length > MAX_LOG_ENTRIES) alertLog.length = MAX_LOG_ENTRIES;
+  saveAlertLog();
+}
+
+loadAlertLog();
+
 async function sendTelegramAlert(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   try {
@@ -1509,6 +1531,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
         `Status: ${oldStatus ?? 'unknown'} → online\n` +
         `Time: ${now}`;
       for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
+      appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'device_online', text, chatCount: subscribers.length });
     }
     if (newStatus === 'offline' && config.triggers.includes('device_offline')) {
       const text =
@@ -1518,6 +1541,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
         `Status: ${oldStatus ?? 'unknown'} → offline\n` +
         `Time: ${now}`;
       for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
+      appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'device_offline', text, chatCount: subscribers.length });
     }
   }
 
@@ -1537,6 +1561,7 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
       `Last Activity: ${newRecord.last_activity}\n` +
       `SIM1: ${newRecord.sim1_number ?? 'N/A'}`;
     for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
+    appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'new_sms', text, chatCount: subscribers.length });
   }
 }
 
@@ -1634,6 +1659,21 @@ app.delete('/api/telegram/alerts/:urlSet/:deviceId', validateUrlSet, (req, res) 
 
 app.get('/api/telegram/alerts/:urlSet', validateUrlSet, (req, res) => {
   res.json(alertStore.alerts[req.params.urlSet] || {});
+});
+
+// ── Notifications: get recent alert log ──────────────────────────────────────
+app.get('/api/notifications', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const since = req.query.since; // ISO timestamp — only return entries newer than this
+  let entries = alertLog.slice(0, limit);
+  if (since) entries = entries.filter(e => e.ts > since);
+  res.json({ entries, total: alertLog.length });
+});
+
+app.delete('/api/notifications', (req, res) => {
+  alertLog = [];
+  saveAlertLog();
+  res.json({ ok: true });
 });
 
 // ── Telegram: get all chat IDs that have ever messaged this bot (getUpdates) ──
