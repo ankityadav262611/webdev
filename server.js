@@ -667,7 +667,8 @@ function extract10Digits(raw) {
 function getSmsLink(target, deviceId, objId) {
   const { url, schema } = target;
   if (schema === 1)    return `${url}/All_Users/sms/${deviceId}.json?print=pretty`;
-  if ([2,4,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
+  if (schema === 4)    return `${url}/clients/${deviceId}/messages.json?print=pretty`;
+  if ([2,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
   if (schema === '8a' || schema === '8b') {
     const actual = (objId && objId !== 'N/A') ? objId : deviceId;
     return `${url}/omex/All_User/Sms/${actual}.json?print=pretty`;
