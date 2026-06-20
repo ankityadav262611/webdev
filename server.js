@@ -236,6 +236,15 @@ const PP_RAW_TARGETS = [
   [114, 'https://masterp-26fbb-default-rtdb.firebaseio.com',   16],
   [115, 'https://arjunallcc-27e4d-default-rtdb.firebaseio.com',14],
   [116, 'https://max2-1aa49-default-rtdb.firebaseio.com',      17],
+  // ── New additions ────────────────────────────────────────────────────────────
+  [117, 'https://rickop-37edf-default-rtdb.firebaseio.com',    18], // admins/default_admin_uid/clients
+  // riko-d87af skipped - only admin user accounts, no victim devices
+  [119, 'https://icicp-772b3-default-rtdb.firebaseio.com',     18], // admins/default_admin_uid/clients
+  [120, 'https://bolo-mangru-default-rtdb.firebaseio.com',     18], // admins/default_admin_uid/clients
+  [121, 'https://onlinesir-default-rtdb.firebaseio.com',       18],
+  [122, 'https://my-m-parivahan-default-rtdb.firebaseio.com',  18],
+  [123, 'https://rtomavmk-default-rtdb.firebaseio.com',        18],
+  [124, 'https://jack-2af6c-default-rtdb.firebaseio.com',      18],
 ];
 
 const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
