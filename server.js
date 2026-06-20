@@ -1083,7 +1083,7 @@ app.get('/api/url/:id/device/:deviceId/sms', async (req, res) => {
 app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
-  const target = TARGETS.find(t => t.id === id);
+  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1113,7 +1113,7 @@ app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
 app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
-  const target = TARGETS.find(t => t.id === id);
+  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1143,7 +1143,7 @@ app.get('/api/url/:id/sms-search', async (req, res) => {
   const id = parseInt(req.params.id);
   const q  = (req.query.q || '').trim().toLowerCase();
   if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
-  const target = TARGETS.find(t => t.id === id);
+  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
 
   const db = getTargetDb(target);
