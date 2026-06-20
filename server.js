@@ -119,9 +119,9 @@ const RAW_TARGETS = [
   [39,'https://u72749819-fa563-default-rtdb.firebaseio.com'],
   [40,'https://ajay-33c1b-default-rtdb.firebaseio.com'],
   [41,'https://anaryef50-aa5f1-default-rtdb.firebaseio.com'],
-  [42,'https://ajna-20fc4-default-rtdb.firebaseio.com'],
-  [43,'https://e5turnament2-default-rtdb.firebaseio.com'],
-  [44,'https://jaimahakal-42698-default-rtdb.firebaseio.com'],
+  // #42 ajna-20fc4 removed - no SMS data
+  // #43 e5turnament2 removed - no SMS data
+  // #44 jaimahakal-42698 removed - no SMS data
   [45,'https://motb-10aae-default-rtdb.firebaseio.com'],
   [46,'https://bevhhwhbe-default-rtdb.firebaseio.com'],
   [48,'https://csforme-dc64a-default-rtdb.firebaseio.com'],
@@ -133,7 +133,7 @@ const RAW_TARGETS = [
   [54,'https://jjjjjkkk-d0cc0-default-rtdb.firebaseio.com'],
   [55,'https://lalu-rama50-default-rtdb.firebaseio.com'],
   [56,'https://u24143844-c1b11-default-rtdb.firebaseio.com'],
-  [57,'https://mypr-6123d-default-rtdb.firebaseio.com'],
+  // #57 mypr-6123d removed - no SMS data (form data only)
   [58,'https://nxt11-d55d0-default-rtdb.firebaseio.com'],
   [59,'https://r62710898-39a8e-default-rtdb.firebaseio.com'],
   [60,'https://u16714964-283ef-default-rtdb.firebaseio.com'],
@@ -165,7 +165,7 @@ const RAW_TARGETS = [
   [86,'https://jsjsjdj-7f0d1-default-rtdb.firebaseio.com'],
   [87,'https://rahul-54fe9-default-rtdb.firebaseio.com'],
   [88,'https://runjun-master-panel-default-rtdb.firebaseio.com'],
-  [89,'https://apkdriod-f6fb9-default-rtdb.firebaseio.com'],
+  // #89 apkdriod-f6fb9 removed - no SMS data
   [90,'https://fir-1fa16-default-rtdb.firebaseio.com'],
   [91,'https://newspreding-default-rtdb.firebaseio.com'],
   [92,'https://privatesok-59944-default-rtdb.firebaseio.com'],
@@ -179,14 +179,14 @@ const RAW_TARGETS = [
 // ── Schema assignment ─────────────────────────────────────────────────────────
 const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,71,73,81,83,90,92,94,97]);
 const SCHEMA_3  = new Set([32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
-const SCHEMA_4  = new Set([42,43,44,45,49,50,51,52]);
+const SCHEMA_4  = new Set([45,49,50,51,52]);
 const SCHEMA_5  = new Set([58]);
-const SCHEMA_6  = new Set([57]);
+const SCHEMA_6  = new Set([]);
 const SCHEMA_8A = new Set([1]);
 const SCHEMA_8B = new Set([8,9,10,11,41]);
 const SCHEMA_9  = new Set([5,12,13,40,54,59,61,62,63,64,65,70,74,75,76,93]);
 const SCHEMA_10 = new Set([84]);
-const SCHEMA_11 = new Set([80,82,85,86,87,88,89,91,95,96]);
+const SCHEMA_11 = new Set([80,82,85,86,87,88,91,95,96]);
 const SCHEMA_12 = new Set([48]);
 const SCHEMA_13 = new Set([53]);
 const SCHEMA_14 = new Set([39,78]);
