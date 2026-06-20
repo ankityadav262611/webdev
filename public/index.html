@@ -569,7 +569,7 @@ async function openUrl(id) {
 
   // Load device names for this URL
   try {
-    const nr = await fetch(`/api/names/${id}`);
+    const nr = await fetch(`/api/names/${id}?mode=${currentMode}`);
     currentDeviceNames = await nr.json();
   } catch { currentDeviceNames = {}; }
 
@@ -820,7 +820,7 @@ async function openNotes(evt, urlId, deviceId) {
   document.getElementById('notes-textarea').value = 'Loading…';
   document.getElementById('notes-modal').classList.add('open');
   try {
-    const r = await fetch(`/api/notes/${urlId}/${encodeURIComponent(deviceId)}`);
+    const r = await fetch(`/api/notes/${urlId}/${encodeURIComponent(deviceId)}?mode=${currentMode}`);
     const d = await r.json();
     document.getElementById('notes-textarea').value = d.note || '';
   } catch { document.getElementById('notes-textarea').value = ''; }
@@ -829,7 +829,7 @@ async function openNotes(evt, urlId, deviceId) {
 async function saveNotes() {
   const note = document.getElementById('notes-textarea').value;
   try {
-    await fetch(`/api/notes/${_notesUrlId}/${encodeURIComponent(_notesDeviceId)}`,
+    await fetch(`/api/notes/${_notesUrlId}/${encodeURIComponent(_notesDeviceId)}?mode=${currentMode}`,
       { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({note}) });
     document.getElementById('notes-status').textContent = '✅ Saved!';
     setTimeout(() => document.getElementById('notes-status').textContent = '', 2000);
@@ -920,7 +920,7 @@ async function saveNameEdit(evt, deviceId) {
   if (!inp) return;
   const val = inp.value.trim();
   try {
-    await fetch(`/api/names/${currentUrlId}/${encodeURIComponent(deviceId)}`,
+    await fetch(`/api/names/${currentUrlId}/${encodeURIComponent(deviceId)}?mode=${currentMode}`,
       { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name: val }) });
   } catch {}
   if (val) currentDeviceNames[deviceId] = val;
@@ -1028,7 +1028,7 @@ async function saveSimEdit(evt, deviceId, slot) {
       ? `/api/old/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
       : currentMode === 'pp'
       ? `/api/pp/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
-      : `/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`;
+      : `/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}?mode=new`;
     const r = await fetch(simApiPath,
       { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ [slot]: val }) });

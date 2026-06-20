@@ -770,8 +770,9 @@ function summariseTarget(target) {
 }
 
 function buildDeviceList(target, devices, simOverrides, aadharDb) {
-  const simForUrl   = simOverrides[String(target.id)] || {};
-  const aadharForUrl = aadharDb[String(target.id)]   || {};
+  const simKey = target.isPP ? `pp_${target.id}` : (target.isOld ? `old_${target.id}` : `new_${target.id}`);
+  const simForUrl   = simOverrides[simKey] || simOverrides[String(target.id)] || {};
+  const aadharForUrl = aadharDb[String(target.id)] || {};
 
   return Object.entries(devices)
     .map(([deviceId, dev]) => ({
@@ -1035,13 +1036,15 @@ app.get('/api/sim-overrides/:urlId', (req, res) => {
 app.post('/api/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
   const { urlId, deviceId } = req.params;
   const { sim1, sim2 } = req.body;
+  const mode = req.query.mode || 'new';
   const overrides = loadSimOverrides();
-  if (!overrides[urlId]) overrides[urlId] = {};
-  if (!overrides[urlId][deviceId]) overrides[urlId][deviceId] = {};
-  if (sim1 !== undefined) overrides[urlId][deviceId].sim1 = sim1;
-  if (sim2 !== undefined) overrides[urlId][deviceId].sim2 = sim2;
-  if (!overrides[urlId][deviceId].sim1 && !overrides[urlId][deviceId].sim2)
-    delete overrides[urlId][deviceId];
+  const key = mode === 'new' ? `new_${urlId}` : `${mode}_${urlId}`;
+  if (!overrides[key]) overrides[key] = {};
+  if (!overrides[key][deviceId]) overrides[key][deviceId] = {};
+  if (sim1 !== undefined) overrides[key][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[key][deviceId].sim2 = sim2;
+  if (!overrides[key][deviceId].sim1 && !overrides[key][deviceId].sim2)
+    delete overrides[key][deviceId];
   saveSimOverrides(overrides);
   res.json({ ok: true });
 });
@@ -1062,14 +1065,22 @@ app.post('/api/old/sim-overrides/:urlId/:deviceId', express.json(), (req, res) =
 });
 
 // ── Device Notes ──────────────────────────────────────────────────────────────
+function notesKey(urlId, deviceId, mode) {
+  const prefix = mode === 'new' ? 'new' : (mode === 'old' ? 'old' : (mode === 'pp' ? 'pp' : 'new'));
+  return `${prefix}_${urlId}:${deviceId}`;
+}
+
 app.get('/api/notes/:urlId/:deviceId', (req, res) => {
-  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const mode = req.query.mode || 'new';
+  const key = notesKey(req.params.urlId, req.params.deviceId, mode);
   const notes = loadNotes();
-  res.json({ note: notes[key] || '' });
+  // Fallback: also check legacy key without prefix
+  res.json({ note: notes[key] || notes[`${req.params.urlId}:${req.params.deviceId}`] || '' });
 });
 
 app.post('/api/notes/:urlId/:deviceId', express.json(), (req, res) => {
-  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const mode = req.query.mode || 'new';
+  const key = notesKey(req.params.urlId, req.params.deviceId, mode);
   const notes = loadNotes();
   notes[key] = req.body.note || '';
   saveNotesFile(notes);
@@ -1090,12 +1101,15 @@ function saveNamesFile(names) {
 }
 
 app.get('/api/names/:urlId/:deviceId', (req, res) => {
-  const key = `${req.params.urlId}:${req.params.deviceId}`;
-  res.json({ name: loadNames()[key] || '' });
+  const mode = req.query.mode || 'new';
+  const key = `${mode === 'new' ? 'new' : mode}_${req.params.urlId}:${req.params.deviceId}`;
+  const names = loadNames();
+  res.json({ name: names[key] || names[`${req.params.urlId}:${req.params.deviceId}`] || '' });
 });
 
 app.post('/api/names/:urlId/:deviceId', express.json(), (req, res) => {
-  const key = `${req.params.urlId}:${req.params.deviceId}`;
+  const mode = req.query.mode || 'new';
+  const key = `${mode === 'new' ? 'new' : mode}_${req.params.urlId}:${req.params.deviceId}`;
   const names = loadNames();
   names[key] = (req.body.name || '').trim();
   if (!names[key]) delete names[key];
@@ -1105,7 +1119,8 @@ app.post('/api/names/:urlId/:deviceId', express.json(), (req, res) => {
 
 // Bulk load all names for a URL (for efficient table rendering)
 app.get('/api/names/:urlId', (req, res) => {
-  const prefix = `${req.params.urlId}:`;
+  const mode = req.query.mode || 'new';
+  const prefix = `${mode === 'new' ? 'new' : mode}_${req.params.urlId}:`;
   const all = loadNames();
   const forUrl = {};
   for (const [k, v] of Object.entries(all)) {
