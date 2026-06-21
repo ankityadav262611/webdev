@@ -180,9 +180,9 @@ const RAW_TARGETS = [
 ];
 
 // ── Schema assignment ─────────────────────────────────────────────────────────
-const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,49,71,73,81,83,90,92,94,97]);
+const SCHEMA_2  = new Set([14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,46,49,50,71,73,81,83,90,92,94,97]);
 const SCHEMA_3  = new Set([32,33,34,35,36,37,55,56,66,67,68,69,72,77,79]);
-const SCHEMA_4  = new Set([45,50,51,52]);
+const SCHEMA_4  = new Set([45,51,52]);
 const SCHEMA_5  = new Set([58]);
 const SCHEMA_6  = new Set([]);
 const SCHEMA_8A = new Set([1]);
