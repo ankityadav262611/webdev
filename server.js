@@ -1088,7 +1088,9 @@ app.get('/api/url/:id/device/:deviceId/sms', async (req, res) => {
 app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
-  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const mode = req.query.mode || 'new';
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1118,7 +1120,9 @@ app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
 app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
-  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const mode = req.query.mode || 'new';
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1148,7 +1152,9 @@ app.get('/api/url/:id/sms-search', async (req, res) => {
   const id = parseInt(req.params.id);
   const q  = (req.query.q || '').trim().toLowerCase();
   if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
-  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const mode = req.query.mode || 'new';
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
 
   const db = getTargetDb(target);
@@ -1527,8 +1533,10 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
       const text =
         `🔔 [${bot.name}]\n` +
         `Device: ${deviceId}\n` +
+        `Brand: ${newRecord.brand ?? 'Unknown'}\n` +
         `URL Set: ${urlSet} (ID ${target.id})\n` +
         `Status: ${oldStatus ?? 'unknown'} → online\n` +
+        `SIM1: ${newRecord.sim1_number ?? 'N/A'}\n` +
         `Time: ${now}`;
       for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
       appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'device_online', text, chatCount: subscribers.length });
@@ -1537,8 +1545,10 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
       const text =
         `🔔 [${bot.name}]\n` +
         `Device: ${deviceId}\n` +
+        `Brand: ${newRecord.brand ?? 'Unknown'}\n` +
         `URL Set: ${urlSet} (ID ${target.id})\n` +
         `Status: ${oldStatus ?? 'unknown'} → offline\n` +
+        `SIM1: ${newRecord.sim1_number ?? 'N/A'}\n` +
         `Time: ${now}`;
       for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
       appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'device_offline', text, chatCount: subscribers.length });
@@ -1553,13 +1563,16 @@ function dispatchAlerts(target, deviceId, oldRecord, newRecord) {
     newRecord.last_activity !== null &&
     newRecord.last_activity !== oldRecord.last_activity
   ) {
+    const smsUrl = getSmsLink(target, deviceId, newRecord.obj_id).replace('?print=pretty', '?print=pretty');
     const text =
       `📩 [${bot.name}]\n` +
       `Device: ${deviceId}\n` +
       `URL Set: ${urlSet} (ID ${target.id})\n` +
+      `Brand: ${newRecord.brand ?? 'Unknown'}\n` +
       `New SMS activity detected\n` +
       `Last Activity: ${newRecord.last_activity}\n` +
-      `SIM1: ${newRecord.sim1_number ?? 'N/A'}`;
+      `SIM1: ${newRecord.sim1_number ?? 'N/A'}\n` +
+      `SMS: ${smsUrl}`;
     for (const chatId of subscribers) sendTelegramAlert(bot.token, chatId, text);
     appendAlertLog({ botName: bot.name, deviceId, urlSet, targetId: target.id, type: 'new_sms', text, chatCount: subscribers.length });
   }

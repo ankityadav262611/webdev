@@ -814,7 +814,7 @@ async function openSearchno(evt, urlId, deviceId, brand) {
   modal.classList.add('open');
 
   try {
-    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/searchno`);
+    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/searchno?mode=${currentMode}`);
     const data = await res.json();
 
     if (data.error && !data.hits?.length) {
@@ -862,7 +862,7 @@ async function openSearchaadhar(evt, urlId, deviceId, brand) {
   modal.classList.add('open');
 
   try {
-    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/searchaadhar`);
+    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/searchaadhar?mode=${currentMode}`);
     const data = await res.json();
 
     if (data.error && !data.hits?.length) {
