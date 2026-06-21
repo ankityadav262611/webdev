@@ -911,8 +911,8 @@ function summariseTarget(target) {
 
   for (const [, dev] of deviceList) {
     if (dev.current_status === 'online') online++;
-    // Juicy count uses hardcoded baseline only — not affected by user keyword edits
-    if ((dev.juicy_keywords || []).some(k => HARDCODED_JUICY_SET.has(k))) juicyCount++;
+    // Juicy count uses current active JUICY_KEYWORDS (user's current selection)
+    if ((dev.juicy_keywords || []).some(k => JUICY_KEYWORDS.includes(k))) juicyCount++;
     if (extract10Digits(dev.sim1_number)) withSim1++;
     if (extract10Digits(dev.sim2_number)) withSim2++;
     const act = parseLastActivity(dev.last_activity);
@@ -1362,12 +1362,12 @@ app.get('/api/names/:urlId', (req, res) => {
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
-const KEYWORDS_FILE = path.join(DATA_DIR, 'keywords.json');
+const KEYWORDS_FILE     = path.join(DATA_DIR, 'keywords.json');
+const ALL_KEYWORDS_FILE = path.join(DATA_DIR, 'all_keywords.json');
 
 function loadKeywords() {
   try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); }
   catch {}
-  // Return the built-in list as default
   return [...JUICY_KEYWORDS];
 }
 function saveKeywordsFile(kws) {
@@ -1375,19 +1375,53 @@ function saveKeywordsFile(kws) {
   catch (e) { console.error('Keywords save error:', e.message); }
 }
 
+function loadAllKeywords() {
+  try { if (fs.existsSync(ALL_KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(ALL_KEYWORDS_FILE, 'utf8')); }
+  catch {}
+  return [...JUICY_KEYWORDS];
+}
+function saveAllKeywordsFile(kws) {
+  try { fs.writeFileSync(ALL_KEYWORDS_FILE, JSON.stringify(kws, null, 2)); }
+  catch (e) { console.error('All-keywords save error:', e.message); }
+}
+
 app.get('/api/keywords', (req, res) => {
-  res.json({ keywords: loadKeywords() });
+  res.json({ keywords: loadKeywords(), all: loadAllKeywords() });
 });
 
 app.post('/api/keywords', express.json(), (req, res) => {
   const kws = req.body.keywords;
   if (!Array.isArray(kws)) return res.status(400).json({ error: 'keywords must be array' });
   const clean = [...new Set(kws.map(k => String(k).trim().toLowerCase()).filter(Boolean))];
+
+  // Detect which keywords are newly added (not in current active list)
+  const prevActive = new Set(loadKeywords());
+  const newlyAdded = clean.filter(k => !prevActive.has(k));
+
+  // Save active (current selection)
   saveKeywordsFile(clean);
-  // Hot-reload: update in-memory JUICY_KEYWORDS array
+
+  // Accumulate: merge into all-keywords store (never discard)
+  const allKws = new Set(loadAllKeywords());
+  for (const k of clean) allKws.add(k);
+  saveAllKeywordsFile([...allKws]);
+
+  // Hot-reload in-memory JUICY_KEYWORDS
   JUICY_KEYWORDS.length = 0;
   for (const k of clean) JUICY_KEYWORDS.push(k);
-  res.json({ ok: true, count: clean.length });
+
+  // If new keywords added, schedule a background re-poll of all targets
+  if (newlyAdded.length > 0) {
+    console.log(`[Keywords] ${newlyAdded.length} new keyword(s) added: ${newlyAdded.join(', ')} — triggering re-poll`);
+    setTimeout(() => {
+      console.log('[Keywords] Starting re-poll for new keywords…');
+      for (let i = 0; i < ALL_TARGETS.length; i++) {
+        setTimeout(() => pollTarget(ALL_TARGETS[i]), i * 1000);
+      }
+    }, 500);
+  }
+
+  res.json({ ok: true, count: clean.length, allCount: allKws.size, newlyAdded });
 });
 
 // ── Telegram Alert Store ──────────────────────────────────────────────────────

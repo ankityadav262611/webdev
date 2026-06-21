@@ -449,6 +449,7 @@
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
       <button class="btn" onclick="saveKeywords()">💾 Save</button>
       <button class="btn btn-ghost" onclick="closeKeywordsModal()">Cancel</button>
+      <button class="btn btn-ghost" id="kw-show-all-btn" onclick="loadAllKnownKeywords(this)" style="font-size:12px">📚 All Known</button>
       <span id="kw-count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
       <span id="kw-status" style="color:var(--green);font-size:12px"></span>
     </div>
@@ -1224,8 +1225,14 @@ async function openKeywordsModal() {
   try {
     const res = await fetch('/api/keywords');
     const data = await res.json();
+    // Show active keywords in editor
     document.getElementById('kw-textarea').value = data.keywords.join('\n');
-    document.getElementById('kw-count').textContent = `${data.keywords.length} keywords`;
+    const activeCount = data.keywords.length;
+    const allCount    = (data.all || data.keywords).length;
+    document.getElementById('kw-count').textContent =
+      allCount > activeCount
+        ? `${activeCount} active / ${allCount} total known`
+        : `${activeCount} keywords`;
   } catch (e) {
     document.getElementById('kw-textarea').value = '';
     document.getElementById('kw-status').textContent = `❌ Load error: ${e.message}`;
@@ -1247,8 +1254,27 @@ async function saveKeywords() {
     });
     const data = await res.json();
     if (data.ok) {
-      document.getElementById('kw-status').textContent = '✅ Saved!';
-      setTimeout(() => document.getElementById('kw-status').textContent = '', 2500);
+      const newCount = data.newlyAdded?.length || 0;
+      const allCount = data.allCount || keywords.length;
+      document.getElementById('kw-count').textContent =
+        allCount > keywords.length
+          ? `${keywords.length} active / ${allCount} total known`
+          : `${keywords.length} keywords`;
+      if (newCount > 0) {
+        document.getElementById('kw-status').textContent =
+          `✅ Saved! ${newCount} new keyword(s) added — refreshing URLs…`;
+        // Close modal and refresh URL list after a short delay
+        setTimeout(() => {
+          document.getElementById('keywords-modal').classList.remove('open');
+          // If currently on URL list view, refresh it
+          if (document.getElementById('view-urls').classList.contains('active')) {
+            loadUrls();
+          }
+        }, 1500);
+      } else {
+        document.getElementById('kw-status').textContent = '✅ Saved!';
+        setTimeout(() => document.getElementById('kw-status').textContent = '', 2500);
+      }
     }
   } catch (e) {
     document.getElementById('kw-status').textContent = `❌ ${e.message}`;
@@ -1260,6 +1286,21 @@ document.getElementById('kw-textarea')?.addEventListener('input', () => {
   const n = document.getElementById('kw-textarea').value.split('\n').filter(s=>s.trim()).length;
   document.getElementById('kw-count').textContent = `${n} keywords`;
 });
+
+// Load all ever-known keywords into the editor (for review / restore)
+async function loadAllKnownKeywords(btn) {
+  try {
+    const res  = await fetch('/api/keywords');
+    const data = await res.json();
+    const all  = data.all || data.keywords;
+    document.getElementById('kw-textarea').value = all.join('\n');
+    document.getElementById('kw-count').textContent = `${all.length} keywords (showing all known)`;
+    if (btn) btn.textContent = '✓ Showing all';
+    setTimeout(() => { if (btn) btn.textContent = '📚 All Known'; }, 2000);
+  } catch (e) {
+    document.getElementById('kw-status').textContent = `❌ ${e.message}`;
+  }
+}
 
 // ── SIM inline edit ───────────────────────────────────────────────────────────
 // localStorage key: simov_<mode>_<urlId>_<deviceId>_<slot>
