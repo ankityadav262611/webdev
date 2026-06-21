@@ -203,6 +203,27 @@
   .devid-copy-flash.show { display:inline; }
   .fire-badge { font-size:13px; title:attr(title); }
 
+  /* ── Keyword filter picker ── */
+  .kw-filter-wrap { position:relative; display:inline-block; }
+  .kw-picker-dropdown {
+    position:absolute; top:calc(100% + 6px); left:0; min-width:240px; max-width:320px;
+    background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+    padding:10px; z-index:500; box-shadow:0 6px 24px rgba(0,0,0,.5); display:none;
+  }
+  .kw-picker-dropdown.open { display:block; }
+  .kw-picker-header { display:flex; justify-content:space-between; align-items:center;
+                      margin-bottom:8px; font-size:12px; color:var(--muted); }
+  .kw-chip-grid { display:flex; flex-wrap:wrap; gap:5px; max-height:200px; overflow-y:auto; }
+  .kw-chip { background:var(--bg3); border:1px solid var(--border); border-radius:5px;
+             padding:3px 8px; font-size:11px; cursor:pointer; color:var(--muted);
+             transition:background .1s, color .1s; }
+  .kw-chip:hover { border-color:var(--accent); color:var(--text); }
+  .kw-chip.selected { background:rgba(94,114,235,.2); border-color:var(--accent);
+                      color:var(--accent); font-weight:600; }
+  .kw-picker-actions { display:flex; gap:6px; margin-top:8px; }
+  .filter-btn.kw-active { border-color:var(--accent); color:var(--text);
+                           background:rgba(94,114,235,.15); }
+
   .bot-list-item {
     display: flex; align-items: center; justify-content: space-between;
     padding: 6px 0; border-bottom: 1px solid var(--border); gap: 8px;
@@ -698,6 +719,20 @@ async function openUrl(id) {
     ${juicy ? `<button class="filter-btn" onclick="setFilter('juicy',this)">🎯 Juicy (${juicy})</button>` : ''}
     ${sim1 ? `<button class="filter-btn" onclick="setFilter('sim1',this)">📱 Has SIM1 (${sim1})</button>` : ''}
     <button class="filter-btn" onclick="setFilter('today',this)">🔥 Active Today (${currentDevices.filter(d=>_isActiveToday(d.lastActivity)).length})</button>
+    <div class="kw-filter-wrap" id="kw-filter-wrap">
+      <button class="filter-btn" id="kw-filter-btn" onclick="openKeywordPicker(this)">🔑 By Keyword</button>
+      <div class="kw-picker-dropdown" id="kw-picker-dropdown">
+        <div class="kw-picker-header">
+          <span>Select keywords (any match)</span>
+          <span id="kw-selected-count" style="color:var(--accent)"></span>
+        </div>
+        <div class="kw-chip-grid" id="kw-chip-grid"></div>
+        <div class="kw-picker-actions">
+          <button class="btn" style="font-size:11px;padding:3px 10px" onclick="applyKeywordFilter()">Apply</button>
+          <button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="clearKeywordFilter()">Clear</button>
+        </div>
+      </div>
+    </div>
   `;
 
   renderDevices();
@@ -705,6 +740,14 @@ async function openUrl(id) {
 
 function setFilter(f, btn) {
   activeFilter = f;
+  // Clear keyword filter when switching to a regular filter
+  if (f !== 'kw') {
+    activeKeywordFilter.clear();
+    const kwBtn = document.getElementById('kw-filter-btn');
+    if (kwBtn) { kwBtn.classList.remove('kw-active'); kwBtn.textContent = '🔑 By Keyword'; }
+    const dd = document.getElementById('kw-picker-dropdown');
+    if (dd) dd.classList.remove('open');
+  }
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   renderDevices();
@@ -718,6 +761,87 @@ function _isActiveToday(lastActivity) {
     return !isNaN(ts) && (Date.now() - ts) < 86400000;
   } catch { return false; }
 }
+
+// ── Keyword filter state ──────────────────────────────────────────────────────
+let activeKeywordFilter = new Set(); // selected keyword strings
+
+function openKeywordPicker(btn) {
+  const dd = document.getElementById('kw-picker-dropdown');
+  if (!dd) return;
+  const isOpen = dd.classList.contains('open');
+  if (isOpen) { dd.classList.remove('open'); return; }
+
+  // Build chip grid from all unique keywords across current devices
+  const allKws = new Set();
+  for (const d of currentDevices) (d.juicyKeywords || []).forEach(k => allKws.add(k));
+  const sorted = [...allKws].sort();
+
+  if (!sorted.length) {
+    document.getElementById('kw-chip-grid').innerHTML =
+      '<span style="color:var(--muted);font-size:12px">No keywords found in this URL</span>';
+  } else {
+    document.getElementById('kw-chip-grid').innerHTML = sorted.map(kw => `
+      <span class="kw-chip ${activeKeywordFilter.has(kw) ? 'selected' : ''}"
+            onclick="toggleKeyword(this,'${kw.replace(/'/g,"\\'")}')">
+        ${kw}
+      </span>`).join('');
+  }
+  _updateKwCount();
+  dd.classList.add('open');
+}
+
+function toggleKeyword(chip, kw) {
+  if (activeKeywordFilter.has(kw)) {
+    activeKeywordFilter.delete(kw);
+    chip.classList.remove('selected');
+  } else {
+    activeKeywordFilter.add(kw);
+    chip.classList.add('selected');
+  }
+  _updateKwCount();
+}
+
+function _updateKwCount() {
+  const el = document.getElementById('kw-selected-count');
+  if (el) el.textContent = activeKeywordFilter.size > 0 ? `${activeKeywordFilter.size} selected` : '';
+}
+
+function applyKeywordFilter() {
+  const dd = document.getElementById('kw-picker-dropdown');
+  if (dd) dd.classList.remove('open');
+  if (!activeKeywordFilter.size) { clearKeywordFilter(); return; }
+  // Deactivate other filter buttons, activate kw button
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  const kwBtn = document.getElementById('kw-filter-btn');
+  if (kwBtn) {
+    kwBtn.classList.add('kw-active');
+    kwBtn.textContent = `🔑 Keywords (${activeKeywordFilter.size})`;
+  }
+  activeFilter = 'kw';
+  renderDevices();
+}
+
+function clearKeywordFilter() {
+  activeKeywordFilter.clear();
+  const dd = document.getElementById('kw-picker-dropdown');
+  if (dd) dd.classList.remove('open');
+  const kwBtn = document.getElementById('kw-filter-btn');
+  if (kwBtn) { kwBtn.classList.remove('kw-active'); kwBtn.textContent = '🔑 By Keyword'; }
+  // Re-activate 'All' button
+  const allBtn = document.querySelector('.filter-btn:first-child');
+  if (allBtn) { allBtn.classList.add('active'); }
+  activeFilter = 'all';
+  renderDevices();
+}
+
+// Close keyword picker when clicking outside
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('kw-filter-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    const dd = document.getElementById('kw-picker-dropdown');
+    if (dd) dd.classList.remove('open');
+  }
+});
 
 // Copy device ID to clipboard; flash the ✓ indicator
 function copyDeviceId(evt, deviceId, container) {
@@ -748,6 +872,8 @@ function renderDevices() {
   if (activeFilter === 'juicy')   list = list.filter(d => d.juicyKeywords.length > 0);
   if (activeFilter === 'sim1')    list = list.filter(d => d.sim1Clean);
   if (activeFilter === 'today')   list = list.filter(d => _isActiveToday(d.lastActivity));
+  if (activeFilter === 'kw' && activeKeywordFilter.size > 0)
+    list = list.filter(d => d.juicyKeywords.some(k => activeKeywordFilter.has(k)));
 
   const tbody = document.getElementById('device-tbody');
   if (!list.length) {
