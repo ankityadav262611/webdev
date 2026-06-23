@@ -351,6 +351,10 @@
                onkeydown="if(event.key==='Enter')runFindAll(1)"
                oninput="if(this.value.length===0)resetFindAll()">
         <button class="btn" onclick="runFindAll(1)" id="findall-btn">Search</button>
+        <button class="btn btn-ghost" id="findall-dl-btn" onclick="downloadFindAllResults()" style="display:none" title="Download results as JSON">⬇️ Save</button>
+        <label class="btn btn-ghost" style="cursor:pointer;margin:0" title="Upload previously saved results">
+          ⬆️ Load<input type="file" id="findall-upload-input" accept=".json" style="display:none" onchange="uploadFindAllResults(event)">
+        </label>
       </div>
       <div id="findall-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
     </div>
@@ -1912,6 +1916,54 @@ function resetFindAll() {
   document.getElementById('findall-pagination').innerHTML = '';
   document.getElementById('findall-status').textContent = '';
   document.getElementById('total-badge').textContent = '—';
+  document.getElementById('findall-dl-btn').style.display = 'none';
+  _findallAllResults = null;
+}
+
+// ── FindAll: download all results as JSON ─────────────────────────────────────
+let _findallAllResults = null; // stores { query, savedAt, total, results[] }
+
+function downloadFindAllResults() {
+  if (!_findallAllResults) return;
+  const blob = new Blob([JSON.stringify(_findallAllResults, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const safe = _findallAllResults.query.replace(/[^a-z0-9_-]/gi, '_').slice(0, 40);
+  a.href     = url;
+  a.download = `findall_${safe}_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── FindAll: upload & re-render a previously saved JSON ──────────────────────
+function uploadFindAllResults(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  // Reset the file input so the same file can be re-uploaded
+  event.target.value = '';
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.results || !Array.isArray(data.results))
+        throw new Error('Invalid file: missing results array');
+
+      _findallAllResults = data;
+      const q = data.query || '(uploaded)';
+      document.getElementById('findall-input').value = q;
+      document.getElementById('findall-dl-btn').style.display = '';
+      document.getElementById('total-badge').textContent = `${data.total} found`;
+      document.getElementById('findall-status').textContent =
+        `📂 Loaded from file — ${data.total} result(s) for "${q}" (saved ${data.savedAt ? new Date(data.savedAt).toLocaleString() : 'unknown'})`;
+      document.getElementById('findall-pagination').innerHTML = '';
+
+      _renderFindAllResults(data.results, q);
+    } catch (err) {
+      document.getElementById('findall-status').textContent = `❌ Upload failed: ${err.message}`;
+    }
+  };
+  reader.readAsText(file);
 }
 
 async function runFindAll(page) {
@@ -1945,11 +1997,39 @@ async function runFindAll(page) {
 
     if (!data.results.length) { results.innerHTML = ''; return; }
 
-    const esc      = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : s === 'srk' ? '👑 SRK' : '🆕 New';
-    const isToday  = ts => { if (!ts) return false; try { return (Date.now()-new Date(ts).getTime()) < 86400000; } catch { return false; } };
+    // Store all results for download (accumulate across pages)
+    if (page === 1) {
+      _findallAllResults = { query: q, savedAt: new Date().toISOString(), total: data.total, results: [...data.results] };
+    } else if (_findallAllResults) {
+      _findallAllResults.results.push(...data.results);
+    }
+    document.getElementById('findall-dl-btn').style.display = '';
 
-    results.innerHTML = data.results.map(d => `
+    _renderFindAllResults(data.results, q);
+
+    // Pagination
+    if (data.totalPages > 1) {
+      let pag = '';
+      if (page > 1) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page-1})">← Prev</button>`;
+      pag += `<span style="color:var(--muted);font-size:12px;padding:0 8px">Page ${page} / ${data.totalPages}</span>`;
+      if (page < data.totalPages) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page+1})">Next →</button>`;
+      pagDiv.innerHTML = pag;
+    }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Search';
+    status.textContent = `Error: ${e.message}`;
+    results.innerHTML = '';
+  }
+}
+
+// ── Shared renderer for findall results (used by both runFindAll and upload) ──
+function _renderFindAllResults(items, q) {
+  const results = document.getElementById('findall-results');
+  const esc      = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : s === 'srk' ? '👑 SRK' : '🆕 New';
+  const isToday  = ts => { if (!ts) return false; try { return (Date.now()-new Date(ts).getTime()) < 86400000; } catch { return false; } };
+
+  results.innerHTML = items.map(d => `
       <div class="url-card" style="cursor:default;margin-bottom:8px">
         <div class="url-card-header">
           <span class="url-id" style="font-size:13px">#${d.urlId}</span>
@@ -1976,20 +2056,6 @@ async function runFindAll(page) {
           <button class="sms-btn" onclick="switchMode('${d.urlSet}');openUrl(${d.urlId})">👁️ View URL</button>
         </div>
       </div>`).join('');
-
-    // Pagination
-    if (data.totalPages > 1) {
-      let pag = '';
-      if (page > 1) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page-1})">← Prev</button>`;
-      pag += `<span style="color:var(--muted);font-size:12px;padding:0 8px">Page ${page} / ${data.totalPages}</span>`;
-      if (page < data.totalPages) pag += `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px" onclick="runFindAll(${page+1})">Next →</button>`;
-      pagDiv.innerHTML = pag;
-    }
-  } catch (e) {
-    btn.disabled = false; btn.textContent = 'Search';
-    status.textContent = `Error: ${e.message}`;
-    results.innerHTML = '';
-  }
 }
 
 // ── On Alert Devices view ─────────────────────────────────────────────────────
