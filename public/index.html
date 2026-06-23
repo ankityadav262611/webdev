@@ -277,6 +277,7 @@
     <button class="mode-btn active" id="btn-new" onclick="switchMode('new')">🆕 New URLs</button>
     <button class="mode-btn"        id="btn-pp"  onclick="switchMode('pp')">🔵 PP URLs</button>
     <button class="mode-btn"        id="btn-old" onclick="switchMode('old')">📦 Old URLs</button>
+    <button class="mode-btn"        id="btn-srk" onclick="switchMode('srk')">👑 SRK URLs</button>
   </div>
   <div class="search-bar">
     <input type="text" id="search-input" placeholder="Search URL or Device ID…">
@@ -315,6 +316,11 @@
         <div class="hc-icon">📦</div>
         <div class="hc-title">Old URLs</div>
         <div class="hc-sub">DAprevious.py targets<br>IDs 20–100</div>
+      </div>
+      <div class="home-card" onclick="switchMode('srk')">
+        <div class="hc-icon">👑</div>
+        <div class="hc-title">SRK URLs</div>
+        <div class="hc-sub">SRK targets<br>IDs 201–205</div>
       </div>
       <div class="home-card" onclick="openKeywordsModal()">
         <div class="hc-icon">🔑</div>
@@ -483,13 +489,14 @@ let currentDevices = [];
 let currentUrlId = 0;
 let activeFilter = 'all';
 let currentSort = 'total';
-let currentMode = 'new'; // 'new' | 'old'
+let currentMode = 'new'; // 'new' | 'old' | 'pp' | 'srk'
 let currentDeviceNames = {}; // { deviceId: name }
 
 // ── Mode switching ────────────────────────────────────────────────────────────
 function apiPrefix() {
   if (currentMode === 'old') return '/api/old';
   if (currentMode === 'pp')  return '/api/pp';
+  if (currentMode === 'srk') return '/api/srk';
   return '/api';
 }
 
@@ -498,6 +505,7 @@ function switchMode(mode) {
   document.getElementById('btn-new').classList.toggle('active', mode === 'new');
   document.getElementById('btn-pp').classList.toggle('active',  mode === 'pp');
   document.getElementById('btn-old').classList.toggle('active', mode === 'old');
+  document.getElementById('btn-srk').classList.toggle('active', mode === 'srk');
   document.getElementById('view-home').classList.remove('active');
   document.getElementById('view-devices').classList.remove('active');
   document.getElementById('view-urls').classList.add('active');
@@ -1215,7 +1223,7 @@ async function searchDeviceGlobal(q) {
   const info  = document.getElementById('device-search-info');
   const grid  = document.getElementById('device-search-grid');
   panel.style.display = 'block';
-  info.textContent = `🔍 Searching for device "${q}" across New + Old + PP URLs…`;
+  info.textContent = `🔍 Searching for device "${q}" across New + Old + PP + SRK URLs…`;
   grid.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
   try {
@@ -1228,7 +1236,7 @@ async function searchDeviceGlobal(q) {
     }
     info.textContent = `🔍 Found ${data.results.length} device(s) matching "${q}"`;
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : s === 'srk' ? '👑 SRK' : '🆕 New';
     grid.innerHTML = data.results.map(d => `
       <div class="url-card" style="cursor:default;margin-bottom:8px">
         <div class="url-card-header">
@@ -1400,6 +1408,8 @@ async function saveSimEdit(evt, deviceId, slot) {
       ? `/api/old/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
       : currentMode === 'pp'
       ? `/api/pp/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
+      : currentMode === 'srk'
+      ? `/api/srk/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}`
       : `/api/sim-overrides/${currentUrlId}/${encodeURIComponent(deviceId)}?mode=new`;
     const r = await fetch(simApiPath,
       { method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1936,7 +1946,7 @@ async function runFindAll(page) {
     if (!data.results.length) { results.innerHTML = ''; return; }
 
     const esc      = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : s === 'srk' ? '👑 SRK' : '🆕 New';
     const isToday  = ts => { if (!ts) return false; try { return (Date.now()-new Date(ts).getTime()) < 86400000; } catch { return false; } };
 
     results.innerHTML = data.results.map(d => `
@@ -2005,7 +2015,7 @@ async function openAlertDevicesView() {
     }
 
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : '🆕 New';
+    const setLabel = s => s === 'pp' ? '🔵 PP' : s === 'old' ? '📦 Old' : s === 'srk' ? '👑 SRK' : '🆕 New';
     const triggerLabel = t => t === 'device_online' ? '🟢 Online' : t === 'device_offline' ? '🔴 Offline' : '📩 SMS';
 
     body.innerHTML = `
