@@ -15,6 +15,7 @@ const DB_FILE          = path.join(DATA_DIR, 'dashboard_db.json');
 const SIM_FILE         = path.join(DATA_DIR, 'sim_overrides.json');
 const NOTES_FILE       = path.join(DATA_DIR, 'device_notes.json');
 const AADHAR_FILE      = path.join(DATA_DIR, 'aadhar.json');
+const PAANEL_CACHE_FILE = path.join(DATA_DIR, 'paanel_cache.json');
 
 // Poll interval: how often the background poller refreshes each target (ms)
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -1497,6 +1498,72 @@ app.get('/api/names/:urlId', (req, res) => {
     if (k.startsWith(prefix)) forUrl[k.slice(prefix.length)] = v;
   }
   res.json(forUrl);
+});
+
+// ── Paanel Cache: fetch NAME and ID from Paanel API with caching ─────────────
+function loadPaanelCache() {
+  try { if (fs.existsSync(PAANEL_CACHE_FILE)) return JSON.parse(fs.readFileSync(PAANEL_CACHE_FILE, 'utf8')); }
+  catch {}
+  return {};
+}
+function savePaanelCache(cache) {
+  try { fs.writeFileSync(PAANEL_CACHE_FILE, JSON.stringify(cache, null, 2)); }
+  catch (e) { console.error('Paanel cache save error:', e.message); }
+}
+
+// GET /api/paanel/:number - fetch Paanel data for a 10-digit number (with caching)
+app.get('/api/paanel/:number', async (req, res) => {
+  const number = req.params.number.replace(/\D/g,'').slice(-10);
+  if (!number || number.length !== 10) {
+    return res.status(400).json({ error: 'Invalid number - must be 10 digits' });
+  }
+
+  const cache = loadPaanelCache();
+  
+  // Return cached data if available
+  if (cache[number]) {
+    return res.json({ cached: true, ...cache[number] });
+  }
+
+  // Fetch from Paanel API
+  try {
+    const apiUrl = `https://api.paanel.shop/api/gateway.php?key=Jack&number=${number}`;
+    const response = await fetch(apiUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    // Extract first result's NAME and id (12-digit)
+    if (data && Array.isArray(data) && data.length > 0) {
+      const first = data[0];
+      const result = {
+        name: first.NAME || '',
+        id: first.id || '',
+        cached: false
+      };
+      
+      // Cache the result
+      cache[number] = result;
+      savePaanelCache(cache);
+      
+      return res.json(result);
+    }
+    
+    // No data found
+    const emptyResult = { name: '', id: '', cached: false };
+    cache[number] = emptyResult;
+    savePaanelCache(cache);
+    return res.json(emptyResult);
+    
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
