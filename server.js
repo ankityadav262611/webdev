@@ -1540,6 +1540,8 @@ app.get('/api/names/:urlId', (req, res) => {
 // ── Paanel Cache: fetch NAME and ID from Paanel API with caching ─────────────
 // Cache structure: { "10digit": [{ name, id }, ...] }
 let paanelCache = {};
+let paanelCooldownUntil = 0; // Timestamp when cooldown ends
+const PAANEL_COOLDOWN_MS = 45000; // 45 seconds
 
 function loadPaanelCache() {
   try { 
@@ -1563,6 +1565,17 @@ function savePaanelCache() {
   }
 }
 
+// Check if we're in cooldown period
+function isPaanelInCooldown() {
+  return Date.now() < paanelCooldownUntil;
+}
+
+// Activate cooldown (called when rate limit detected)
+function activatePaanelCooldown() {
+  paanelCooldownUntil = Date.now() + PAANEL_COOLDOWN_MS;
+  console.log(`[Paanel] ⏸️  Rate limit detected - cooldown active for ${PAANEL_COOLDOWN_MS/1000}s`);
+}
+
 // Enrich a single SIM number with Paanel data (used during Firebase polling)
 async function enrichSimNumber(simNumber) {
   // Extract 10-digit number
@@ -1576,21 +1589,51 @@ async function enrichSimNumber(simNumber) {
     return paanelCache[number];
   }
 
+  // Check cooldown - skip API call if in cooldown period
+  if (isPaanelInCooldown()) {
+    const remaining = Math.ceil((paanelCooldownUntil - Date.now()) / 1000);
+    console.log(`[Paanel] ⏸️  Cooldown active, skipping ${number} (${remaining}s remaining)`);
+    return [];
+  }
+
   // Fetch from Paanel API
   try {
     const apiUrl = `https://api.paanel.shop/api/gateway.php?key=Jack&number=${number}`;
     const response = await fetch(apiUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://api.paanel.shop/',
+        'Origin': 'https://api.paanel.shop',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+      },
       signal: AbortSignal.timeout(10000),
     });
     
     if (!response.ok) {
       console.error(`[Paanel] API error for ${number}: HTTP ${response.status}`);
-      // DON'T cache empty array on error - allow retry later
+      // Activate cooldown on HTTP errors (likely rate limit)
+      if (response.status === 429 || response.status >= 500) {
+        activatePaanelCooldown();
+      }
       return [];
     }
     
     const data = await response.json();
+    
+    // Check if this is a legitimate "no data found" response
+    if (data && data.status === 'error' && data.message === 'no data found') {
+      // Legitimate "no data found" - cache empty result, no cooldown needed
+      console.log(`[Paanel] ℹ️  No data found for ${number} (legitimate empty result)`);
+      paanelCache[number] = [];
+      savePaanelCache();
+      return [];
+    }
     
     // Store all records as array
     if (data && Array.isArray(data) && data.length > 0) {
@@ -1603,18 +1646,22 @@ async function enrichSimNumber(simNumber) {
       if (records.length > 0) {
         paanelCache[number] = records;
         savePaanelCache();
-        console.log(`[Paanel] Enriched ${number}: ${records.length} record(s)`);
+        console.log(`[Paanel] ✅ Enriched ${number}: ${records.length} record(s)`);
         return records;
       }
     }
     
-    // No data found - DON'T cache, might be rate limit or temporary issue
-    console.log(`[Paanel] No data for ${number} - not caching (might be rate limit)`);
+    // Unexpected response format - likely rate limit
+    console.log(`[Paanel] ⚠️  Unexpected response for ${number} - activating cooldown (possible rate limit)`);
+    activatePaanelCooldown();
     return [];
     
   } catch (error) {
-    console.error(`[Paanel] Request failed for ${number}:`, error.message);
-    // DON'T cache on error - allow retry later
+    console.error(`[Paanel] ❌ Request failed for ${number}:`, error.message);
+    // Activate cooldown on timeout/network errors
+    if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
+      activatePaanelCooldown();
+    }
     return [];
   }
 }
@@ -1646,6 +1693,20 @@ app.post('/api/paanel/clear-empty', (req, res) => {
   savePaanelCache();
   console.log(`[Paanel] Cleared ${removed} empty cache entries`);
   res.json({ ok: true, removed });
+});
+
+// GET /api/paanel/status - check cooldown status and cache stats
+app.get('/api/paanel/status', (req, res) => {
+  const inCooldown = isPaanelInCooldown();
+  const cooldownRemaining = inCooldown ? Math.ceil((paanelCooldownUntil - Date.now()) / 1000) : 0;
+  res.json({
+    cacheSize: Object.keys(paanelCache).length,
+    cachedNumbers: Object.keys(paanelCache).filter(k => paanelCache[k].length > 0).length,
+    emptyCache: Object.keys(paanelCache).filter(k => !paanelCache[k] || paanelCache[k].length === 0).length,
+    inCooldown,
+    cooldownRemaining,
+    cooldownDuration: PAANEL_COOLDOWN_MS / 1000
+  });
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
