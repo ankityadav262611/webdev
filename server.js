@@ -800,7 +800,7 @@ async function pollTarget(target) {
                 || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
-      // ── Enrich SIM numbers with Paanel data (non-blocking) ──────────────────
+      // ── Enrich SIM numbers with Paanel data ──────────────────────────────────
       let sim1_enriched = [];
       let sim2_enriched = [];
       
@@ -808,22 +808,32 @@ async function pollTarget(target) {
       const sim1Clean = s1 ? String(s1).replace(/\D/g,'').slice(-10) : '';
       const sim2Clean = s2 ? String(s2).replace(/\D/g,'').slice(-10) : '';
       
-      // Check cache first, enrich asynchronously if not cached
+      // Try to enrich both SIMs (use cache if available, otherwise fetch async)
       if (sim1Clean && sim1Clean.length === 10) {
-        if (paanelCache[sim1Clean]) {
+        if (paanelCache[sim1Clean] && paanelCache[sim1Clean].length > 0) {
+          // Use cached data
           sim1_enriched = paanelCache[sim1Clean];
         } else {
-          // Enrich asynchronously (don't block polling)
-          enrichSimNumber(sim1Clean).catch(() => {});
+          // Try to fetch synchronously (will use cache if available after async fetch completes)
+          try {
+            sim1_enriched = await enrichSimNumber(sim1Clean);
+          } catch {
+            sim1_enriched = [];
+          }
         }
       }
       
       if (sim2Clean && sim2Clean.length === 10) {
-        if (paanelCache[sim2Clean]) {
+        if (paanelCache[sim2Clean] && paanelCache[sim2Clean].length > 0) {
+          // Use cached data
           sim2_enriched = paanelCache[sim2Clean];
         } else {
-          // Enrich asynchronously (don't block polling)
-          enrichSimNumber(sim2Clean).catch(() => {});
+          // Try to fetch synchronously
+          try {
+            sim2_enriched = await enrichSimNumber(sim2Clean);
+          } catch {
+            sim2_enriched = [];
+          }
         }
       }
 
@@ -1576,9 +1586,7 @@ async function enrichSimNumber(simNumber) {
     
     if (!response.ok) {
       console.error(`[Paanel] API error for ${number}: HTTP ${response.status}`);
-      // Cache empty array to prevent repeated failed requests
-      paanelCache[number] = [];
-      savePaanelCache();
+      // DON'T cache empty array on error - allow retry later
       return [];
     }
     
@@ -1591,23 +1599,22 @@ async function enrichSimNumber(simNumber) {
         id: record.id || ''
       })).filter(r => r.name || r.id); // Only keep records with data
       
-      paanelCache[number] = records;
-      savePaanelCache();
-      console.log(`[Paanel] Enriched ${number}: ${records.length} record(s)`);
-      return records;
+      // Only cache if we got actual data
+      if (records.length > 0) {
+        paanelCache[number] = records;
+        savePaanelCache();
+        console.log(`[Paanel] Enriched ${number}: ${records.length} record(s)`);
+        return records;
+      }
     }
     
-    // No data found - cache empty array
-    paanelCache[number] = [];
-    savePaanelCache();
-    console.log(`[Paanel] No data for ${number}`);
+    // No data found - DON'T cache, might be rate limit or temporary issue
+    console.log(`[Paanel] No data for ${number} - not caching (might be rate limit)`);
     return [];
     
   } catch (error) {
     console.error(`[Paanel] Request failed for ${number}:`, error.message);
-    // Cache empty array on error to prevent repeated failures
-    paanelCache[number] = [];
-    savePaanelCache();
+    // DON'T cache on error - allow retry later
     return [];
   }
 }
@@ -1623,8 +1630,22 @@ app.get('/api/paanel/:number', async (req, res) => {
   res.json({ 
     number,
     records,
-    cached: paanelCache[number] !== undefined
+    cached: paanelCache[number] !== undefined && paanelCache[number].length > 0
   });
+});
+
+// POST /api/paanel/clear-empty - clear all empty cached entries (for cleanup)
+app.post('/api/paanel/clear-empty', (req, res) => {
+  let removed = 0;
+  for (const [number, records] of Object.entries(paanelCache)) {
+    if (!records || (Array.isArray(records) && records.length === 0)) {
+      delete paanelCache[number];
+      removed++;
+    }
+  }
+  savePaanelCache();
+  console.log(`[Paanel] Cleared ${removed} empty cache entries`);
+  res.json({ ok: true, removed });
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
