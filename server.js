@@ -1333,9 +1333,18 @@ app.get('/api/findall', async (req, res) => {
       if (!actualUrl) return null;
       try {
         const smsData = await fbFetch(actualUrl);
+        // Split search query into words for multi-word matching
+        const searchWords = q.split(/\s+/).filter(w => w.length > 0);
+        
         for (const msg of iterMsgs(smsData)) {
           const body = String(msg.body || msg.message || msg.msg || msg.text || '');
-          if (body && body.toLowerCase().includes(q)) {
+          if (!body) continue;
+          
+          const bodyLower = body.toLowerCase();
+          // Check if ALL search words are present in the body (regardless of position/order)
+          const allWordsMatch = searchWords.every(word => bodyLower.includes(word));
+          
+          if (allWordsMatch) {
             return {
               urlId:        target.id,
               urlSet,
