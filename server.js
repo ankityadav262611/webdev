@@ -861,6 +861,10 @@ async function pollTarget(target) {
       }
     }
 
+    // Enrich all devices with Paanel data before saving
+    const devices = Object.values(getTargetDb(target));
+    await Promise.allSettled(devices.map(device => enrichDeviceSims(device)));
+
     saveDashboardDb();
     console.log(`[poll] ${isOld ? 'old' : 'new'} #${id} — ${Object.keys(getTargetDb(target)).length} devices`);
 
@@ -1540,8 +1544,14 @@ app.get('/api/names/:urlId', (req, res) => {
 // ── Paanel Cache: fetch NAME and ID from Paanel API with caching ─────────────
 // Cache structure: { "10digit": [{ name, id }, ...] }
 let paanelCache = {};
-let paanelCooldownUntil = 0; // Timestamp when cooldown ends
-const PAANEL_COOLDOWN_MS = 45000; // 45 seconds
+let paanelRateLimitUntil = 0;  // Timestamp when rate limit cooldown expires
+let paanelLastRequestTime = 0; // Track last API request time for throttling
+const PAANEL_REQUEST_DELAY = 2000; // Minimum 2000ms delay between API requests (30 req/min)
+
+// Circuit breaker: stop all requests after consecutive failures
+let paanelConsecutiveTimeouts = 0;  // Track consecutive timeout failures
+let paanelDisabledUntilRestart = false;  // Circuit breaker flag
+const MAX_CONSECUTIVE_TIMEOUTS = 5;  // Stop after 5 consecutive timeouts
 
 function loadPaanelCache() {
   try { 
@@ -1565,15 +1575,134 @@ function savePaanelCache() {
   }
 }
 
-// Check if we're in cooldown period
-function isPaanelInCooldown() {
-  return Date.now() < paanelCooldownUntil;
+// Extract valid 10-digit SIM number
+function extractValidSim(simNumber) {
+  if (!simNumber || typeof simNumber !== 'string') return null;
+  const clean = simNumber.replace(/\D/g, '').slice(-10);
+  return (clean && clean.length === 10) ? clean : null;
 }
 
-// Activate cooldown (called when rate limit detected)
-function activatePaanelCooldown() {
-  paanelCooldownUntil = Date.now() + PAANEL_COOLDOWN_MS;
-  console.log(`[Paanel] ⏸️  Rate limit detected - cooldown active for ${PAANEL_COOLDOWN_MS/1000}s`);
+/**
+ * Fetch SIM owner enrichment data from Paanel API
+ * Returns null for temporary failures (don't cache, will retry)
+ * Returns [] for legitimate "no data found" (cache it)
+ * Returns [{NAME, ID}] for successful lookups (cache it)
+ */
+async function fetchPaanelEnrichment(simNumber) {
+  // Circuit breaker: stop all requests if disabled
+  if (paanelDisabledUntilRestart) {
+    return null; // Return null to indicate permanent failure (don't cache)
+  }
+
+  // Check if we're in rate limit cooldown
+  if (Date.now() < paanelRateLimitUntil) {
+    const remainingSec = Math.ceil((paanelRateLimitUntil - Date.now()) / 1000);
+    console.log(`[Paanel] Rate limit active, skipping ${simNumber} (${remainingSec}s remaining)`);
+    return null; // Return null to skip caching (will retry later)
+  }
+
+  // Throttle requests: wait if last request was too recent
+  const timeSinceLastRequest = Date.now() - paanelLastRequestTime;
+  if (timeSinceLastRequest < PAANEL_REQUEST_DELAY) {
+    const waitTime = PAANEL_REQUEST_DELAY - timeSinceLastRequest;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+  
+  paanelLastRequestTime = Date.now();
+
+  const url = `https://api.paanel.shop/api/gateway.php?key=Jack&number=${simNumber}`;
+  
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://api.paanel.shop/',
+        'Origin': 'https://api.paanel.shop',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin'
+      },
+      signal: AbortSignal.timeout(10000) // 10 second timeout
+    });
+    
+    // Reset timeout counter on successful connection
+    paanelConsecutiveTimeouts = 0;
+    
+    if (!response.ok) {
+      // HTTP 502/503 errors - don't cache, will retry later
+      if (response.status === 502 || response.status === 503) {
+        console.error(`[Paanel] HTTP ${response.status} for ${simNumber} (will retry later)`);
+        return null; // Don't cache, retry on next poll
+      }
+      // Other HTTP errors - trigger cooldown
+      console.error(`[Paanel] HTTP ${response.status} for ${simNumber}`);
+      if (response.status === 429 || response.status >= 500) {
+        paanelRateLimitUntil = Date.now() + 45000;
+        console.log(`[Paanel] ⏸️  Rate limit detected - cooldown active for 45s`);
+      }
+      return null;
+    }
+    
+    const data = await response.json();
+    
+    // Smart rate limit detection - EXACT format check
+    // Legitimate "no data found" response format:
+    // {status: "error", message: "no data found", timestamp: "...", credit: {...}, contact: {...}}
+    if (data.status === 'error' && 
+        data.message && 
+        data.message.toLowerCase().trim() === 'no data found') {
+      // This is legitimate - no data exists for this number
+      console.log(`[Paanel] ℹ️  No data found for ${simNumber} (legitimate empty result)`);
+      return [];  // Cache this as empty result - NO COOLDOWN
+    }
+    
+    // Handle success response with data array
+    if (data.status === 'success' && Array.isArray(data.data)) {
+      const filtered = data.data
+        .filter(record => record && typeof record === 'object' && record.NAME && record.ID)
+        .map(record => ({ name: record.NAME, id: record.ID }));
+      console.log(`[Paanel] ✅ Found ${filtered.length} record(s) for ${simNumber}`);
+      return filtered;
+    }
+    
+    // Handle direct array response (if API varies)
+    if (Array.isArray(data)) {
+      const filtered = data
+        .filter(record => record && typeof record === 'object' && record.NAME && record.ID)
+        .map(record => ({ name: record.NAME, id: record.ID }));
+      console.log(`[Paanel] ✅ Found ${filtered.length} record(s) for ${simNumber}`);
+      return filtered;
+    }
+    
+    // Unexpected response format - likely rate limited
+    console.warn(`[Paanel] ⚠️  Rate limit detected for ${simNumber} - activating 45s cooldown`);
+    console.warn(`[Paanel] Response preview: ${JSON.stringify(data).substring(0, 200)}`);
+    paanelRateLimitUntil = Date.now() + 45000;  // 45 second cooldown
+    return null; // Don't cache, will retry after cooldown
+    
+  } catch (error) {
+    // Check for timeout errors
+    if (error.message.includes('aborted') || error.message.includes('timeout')) {
+      paanelConsecutiveTimeouts++;
+      console.error(`[Paanel] ❌ Timeout for ${simNumber} (${paanelConsecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS})`);
+      
+      // Circuit breaker: disable after MAX_CONSECUTIVE_TIMEOUTS
+      if (paanelConsecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+        paanelDisabledUntilRestart = true;
+        console.error(`[Paanel] 🔴 DISABLED after ${MAX_CONSECUTIVE_TIMEOUTS} consecutive timeouts. Restart server to re-enable.`);
+      }
+      
+      return null; // Don't cache, will retry (unless disabled)
+    }
+    
+    console.error(`[Paanel] ❌ Error for ${simNumber}:`, error.message);
+    return null; // Don't cache other errors, will retry
+  }
 }
 
 // Enrich a single SIM number with Paanel data (used during Firebase polling)
@@ -1585,86 +1714,44 @@ async function enrichSimNumber(simNumber) {
   }
 
   // Return cached data if available
-  if (paanelCache[number]) {
+  if (paanelCache[number] !== undefined) {
     return paanelCache[number];
   }
 
-  // Check cooldown - skip API call if in cooldown period
-  if (isPaanelInCooldown()) {
-    const remaining = Math.ceil((paanelCooldownUntil - Date.now()) / 1000);
-    console.log(`[Paanel] ⏸️  Cooldown active, skipping ${number} (${remaining}s remaining)`);
-    return [];
+  // Add 200ms delay before API call to help avoid rate limits
+  await new Promise(resolve => setTimeout(resolve, 200));
+  
+  // Cache miss - call API
+  const enrichment = await fetchPaanelEnrichment(number);
+  
+  // Only cache if we got a valid response (not null)
+  // null means temporary failure (will retry later)
+  if (enrichment !== null) {
+    paanelCache[number] = enrichment;
+    savePaanelCache();
   }
-
-  // Fetch from Paanel API
-  try {
-    const apiUrl = `https://api.paanel.shop/api/gateway.php?key=Jack&number=${number}`;
-    const response = await fetch(apiUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Referer': 'https://api.paanel.shop/',
-        'Origin': 'https://api.paanel.shop',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-    
-    if (!response.ok) {
-      console.error(`[Paanel] API error for ${number}: HTTP ${response.status}`);
-      // Activate cooldown on HTTP errors (likely rate limit)
-      if (response.status === 429 || response.status >= 500) {
-        activatePaanelCooldown();
-      }
-      return [];
-    }
-    
-    const data = await response.json();
-    
-    // Check if this is a legitimate "no data found" response
-    if (data && data.status === 'error' && data.message === 'no data found') {
-      // Legitimate "no data found" - cache empty result, no cooldown needed
-      console.log(`[Paanel] ℹ️  No data found for ${number} (legitimate empty result)`);
-      paanelCache[number] = [];
-      savePaanelCache();
-      return [];
-    }
-    
-    // Store all records as array
-    if (data && Array.isArray(data) && data.length > 0) {
-      const records = data.map(record => ({
-        name: record.NAME || '',
-        id: record.id || ''
-      })).filter(r => r.name || r.id); // Only keep records with data
-      
-      // Only cache if we got actual data
-      if (records.length > 0) {
-        paanelCache[number] = records;
-        savePaanelCache();
-        console.log(`[Paanel] ✅ Enriched ${number}: ${records.length} record(s)`);
-        return records;
-      }
-    }
-    
-    // Unexpected response format - likely rate limit
-    console.log(`[Paanel] ⚠️  Unexpected response for ${number} - activating cooldown (possible rate limit)`);
-    activatePaanelCooldown();
-    return [];
-    
-  } catch (error) {
-    console.error(`[Paanel] ❌ Request failed for ${number}:`, error.message);
-    // Activate cooldown on timeout/network errors
-    if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
-      activatePaanelCooldown();
-    }
-    return [];
-  }
+  
+  return enrichment || []; // Return empty array if null
 }
+
+/**
+ * Enrich both SIM numbers for a device with owner information
+ * Processes both SIMs in parallel using Promise.allSettled
+ */
+async function enrichDeviceSims(device) {
+  const sim1 = extractValidSim(device.sim1_number);
+  const sim2 = extractValidSim(device.sim2_number);
+  
+  // Enrich in parallel if both SIMs exist
+  const [sim1Enriched, sim2Enriched] = await Promise.allSettled([
+    sim1 ? enrichSimNumber(sim1) : Promise.resolve([]),
+    sim2 ? enrichSimNumber(sim2) : Promise.resolve([])
+  ]);
+  
+  device.sim1_enriched = sim1Enriched.status === 'fulfilled' ? sim1Enriched.value : [];
+  device.sim2_enriched = sim2Enriched.status === 'fulfilled' ? sim2Enriched.value : [];
+}
+
 
 // GET /api/paanel/:number - fetch Paanel data for a 10-digit number (with caching)
 app.get('/api/paanel/:number', async (req, res) => {
@@ -1697,15 +1784,18 @@ app.post('/api/paanel/clear-empty', (req, res) => {
 
 // GET /api/paanel/status - check cooldown status and cache stats
 app.get('/api/paanel/status', (req, res) => {
-  const inCooldown = isPaanelInCooldown();
-  const cooldownRemaining = inCooldown ? Math.ceil((paanelCooldownUntil - Date.now()) / 1000) : 0;
+  const inCooldown = Date.now() < paanelRateLimitUntil;
+  const cooldownRemaining = inCooldown ? Math.ceil((paanelRateLimitUntil - Date.now()) / 1000) : 0;
   res.json({
     cacheSize: Object.keys(paanelCache).length,
-    cachedNumbers: Object.keys(paanelCache).filter(k => paanelCache[k].length > 0).length,
+    cachedNumbers: Object.keys(paanelCache).filter(k => paanelCache[k] && paanelCache[k].length > 0).length,
     emptyCache: Object.keys(paanelCache).filter(k => !paanelCache[k] || paanelCache[k].length === 0).length,
     inCooldown,
     cooldownRemaining,
-    cooldownDuration: PAANEL_COOLDOWN_MS / 1000
+    cooldownDuration: 45,
+    circuitBreakerActive: paanelDisabledUntilRestart,
+    consecutiveTimeouts: paanelConsecutiveTimeouts,
+    maxTimeouts: MAX_CONSECUTIVE_TIMEOUTS
   });
 });
 
