@@ -1664,8 +1664,16 @@ async function fetchPaanelEnrichment(simNumber) {
     // Handle success response with data array
     if (data.status === 'success' && Array.isArray(data.data)) {
       const filtered = data.data
-        .filter(record => record && typeof record === 'object' && record.NAME && record.ID)
-        .map(record => ({ name: record.NAME, id: record.ID }));
+        .filter(record => {
+          if (!record || typeof record !== 'object') return false;
+          // Check for NAME (case-insensitive)
+          const name = record.NAME || record.name;
+          return name && name.trim().length > 0;
+        })
+        .map(record => ({
+          name: record.NAME || record.name || '',
+          id: record.ID || record.id || record.Id || ''
+        }));
       console.log(`[Paanel] ✅ Found ${filtered.length} record(s) for ${simNumber}`);
       return filtered;
     }
@@ -1673,8 +1681,16 @@ async function fetchPaanelEnrichment(simNumber) {
     // Handle direct array response (if API varies)
     if (Array.isArray(data)) {
       const filtered = data
-        .filter(record => record && typeof record === 'object' && record.NAME && record.ID)
-        .map(record => ({ name: record.NAME, id: record.ID }));
+        .filter(record => {
+          if (!record || typeof record !== 'object') return false;
+          // Check for NAME (case-insensitive)
+          const name = record.NAME || record.name;
+          return name && name.trim().length > 0;
+        })
+        .map(record => ({
+          name: record.NAME || record.name || '',
+          id: record.ID || record.id || record.Id || ''
+        }));
       console.log(`[Paanel] ✅ Found ${filtered.length} record(s) for ${simNumber}`);
       return filtered;
     }
